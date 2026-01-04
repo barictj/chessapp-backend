@@ -14,7 +14,7 @@ const {
 const app = express();
 
 // Middleware
-app.use(cors({ origin: ['http://localhost:19006'], credentials: true }));
+app.use(cors({ origin: '*', credentials: true }));
 app.use(express.json());
 app.use(passport.initialize());
 
@@ -22,21 +22,31 @@ app.use(passport.initialize());
 configureAuth({
   clientID: GOOGLE_CLIENT_ID,
   clientSecret: GOOGLE_CLIENT_SECRET,
-  callbackURL: `${BASE_URL}/auth/google/callback`, // BASE_URL must be http://localhost:3000
+  callbackURL: `${BASE_URL}/auth/google/callback`,
 });
 
 // Health check
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 
-// Google OAuth routes
-app.get(
-  '/auth/google',
+// Google OAuth start — IMPORTANT: redirect_uri must be passed through manually
+app.get('/auth/google', (req, res, next) => {
+  const redirectUri = req.query.redirect_uri;
+
+  if (!redirectUri) {
+    return res.status(400).send("Missing redirect_uri");
+  }
+
+  // Store redirect URI in state param (encoded)
+  const state = Buffer.from(JSON.stringify({ redirectUri })).toString('base64');
+
   passport.authenticate('google', {
     scope: ['profile', 'email'],
     session: false,
-  })
-);
+    state,
+  })(req, res, next);
+});
 
+// Google OAuth callback
 app.get(
   '/auth/google/callback',
   passport.authenticate('google', {
@@ -44,6 +54,13 @@ app.get(
     session: false,
   }),
   (req, res) => {
+    // Decode redirectUri from state
+    const state = JSON.parse(
+      Buffer.from(req.query.state, 'base64').toString('utf8')
+    );
+
+    const redirectUri = state.redirectUri;
+
     const token = jwt.sign(
       {
         sub: req.user.id,
@@ -54,8 +71,8 @@ app.get(
       { expiresIn: '7d' }
     );
 
-    // Redirect into Expo app via deep link
-    res.redirect(`chessapp://auth?token=${token}`);
+    // Redirect back into Expo app
+    res.redirect(`${redirectUri}?token=${token}`);
   }
 );
 
@@ -72,6 +89,6 @@ app.get('/api/secure', requireAuth, (req, res) => {
 
 // Start server
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () =>
-  console.log(`Backend running on port ${PORT}`)
-);
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Backend running on port ${PORT}`);
+});

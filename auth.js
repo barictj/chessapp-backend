@@ -20,28 +20,14 @@ function requireAuth(req, res, next) {
     }
 }
 
-/**
- * IMPORTANT:
- * Expo cannot use localhost or 10.0.2.2 for Google OAuth.
- * Google blocks private IPs and requires device_id/device_name.
- *
- * So we use Expo's redirect URI instead:
- *
- *     chessapp:/oauthredirect
- *
- * This must be added to Google Cloud Console under:
- * OAuth 2.0 Client → Authorized redirect URIs
- */
-const callbackURL = "chessapp:/oauthredirect";
-
 // Configure Google OAuth
-function configureAuth({ clientID, clientSecret }) {
+function configureAuth({ clientID, clientSecret, callbackURL }) {
     passport.use(
         new GoogleStrategy(
             {
                 clientID,
                 clientSecret,
-                callbackURL,
+                callbackURL, // <-- use backend callback, not Expo deep link
             },
             (accessToken, refreshToken, profile, done) => {
                 const user = {
