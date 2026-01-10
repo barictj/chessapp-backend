@@ -15,7 +15,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Create CI env file (.env.dev)
+      - name: Create CI env file (.env.ci)
         shell: bash
         run: |
           # set BASE_URL from secret if present, otherwise default
@@ -23,16 +23,16 @@ jobs:
           JWT_SECRET="${{ secrets.REAL_JWT_SECRET }}"
           GOOGLE_CLIENT_SECRET="${{ secrets.GOOGLE_CLIENT_SECRET }}"
 
-          cat > .env.dev <<EOF
+          cat > .env.ci <<EOF
           JWT_SECRET=${JWT_SECRET}
           BASE_URL=${BASE_URL:-http://localhost:3000}
           GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
           EOF
-          chmod 600 .env.dev
-          echo ".env.dev created at $(pwd)/.env.dev"
+          chmod 600 .env.ci
+          echo ".env.ci created at $(pwd)/.env.ci"
 
       - name: Build and start stack
-        run: docker compose -f compose.yaml up -d --build
+        run: docker compose --env-file .env.ci -f compose.yaml up -d --build
 
       - name: Wait for backend health
         run: |
@@ -77,4 +77,4 @@ jobs:
         if: always()
         run: |
           docker compose -f compose.yaml down -v
-          rm -f .env.dev || true
+          rm -f .env.ci || true
