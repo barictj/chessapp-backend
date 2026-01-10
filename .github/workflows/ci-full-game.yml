@@ -188,23 +188,17 @@ jobs:
               catch (err) { console.error('VERIFY_FAIL:', err.message); process.exit(2); }
             \" '$TOKEN'
           "
-      - name: Ensure CI Google users exist in DB
+      - name: Ensure CI google_id 'ci-player-a' exists
         shell: bash
         run: |
-          echo "Seeding CI Google users (idempotent)..."
+          echo "Inserting ci-player-a fixture (idempotent) and verifying..."
           docker compose exec -T db mysql -uroot -pexample -e "
             USE chess;
-            -- Insert a user whose google_id matches the CI token 'sub' (ci-player-a)
             INSERT INTO users (username, email, google_id, display_name, avatar_url, provider, is_active, created_at)
             VALUES ('ci_test_google', 'ci_test_google@example.com', 'ci-player-a', 'CI Google Test', 'https://example.com/avatar-ci.png', 'google', 1, NOW())
             ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id);
-
-            -- Optional second fixture
-            INSERT INTO users (username, email, google_id, display_name, avatar_url, provider, is_active, created_at)
-            VALUES ('ci_test_google_b', 'ci_test_google_b@example.com', 'ci-google-0002', 'CI Google Test B', 'https://example.com/avatar-ci-b.png', 'google', 1, NOW())
-            ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id);
-
-            SELECT id, username, email, google_id, provider, is_active FROM users WHERE google_id IN ('ci-player-a','ci-google-0002');
+            SELECT id, username, email, google_id, provider, is_active FROM users WHERE google_id='ci-player-a' LIMIT 1;
+            SELECT id, username, email, google_id FROM users LIMIT 10;
           "
 
 
