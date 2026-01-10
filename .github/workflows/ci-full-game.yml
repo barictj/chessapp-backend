@@ -81,26 +81,24 @@ jobs:
         shell: bash
         run: |
           echo "---- .env.ci raw (masked by GitHub if secrets) ----"
-          # show first 50 lines safely (secrets will be masked in Actions logs)
           sed -n '1,50p' .env.ci || true
 
           echo "---- normalize CRLF (if any) ----"
           tr -d '\r' < .env.ci > .env.ci.tmp && mv .env.ci.tmp .env.ci || true
 
-          echo "---- check presence of keys (prints SET/EMPTY only) ----"
+          echo "---- check presence of keys (prints LINE_PRESENT/MISSING_LINE) ----"
           for k in GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET SESSION_SECRET JWT_SECRET NGROK_AUTHTOKEN; do
-            if grep -qE \"^${k}=\" .env.ci; then
-              echo \"$k=LINE_PRESENT\"
+            if grep -qE "^${k}=" .env.ci; then
+              echo "$k=LINE_PRESENT"
             else
-              echo \"$k=MISSING_LINE\"
+              echo "$k=MISSING_LINE"
             fi
           done
 
-          echo "---- docker compose config (shows resolved values) ----"
+          echo "---- docker compose config (no-interpolate) ----"
           docker compose --env-file .env.ci -f ./compose.yaml config --no-interpolate || true
-          echo "---- docker compose config with interpolation (inspect for blanks) ----"
+          echo "---- docker compose config (with interpolation) ----"
           docker compose --env-file .env.ci -f ./compose.yaml config || true
-
 
       - name: Show compose file if present
         shell: bash
