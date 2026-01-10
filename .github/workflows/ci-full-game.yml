@@ -21,7 +21,6 @@ jobs:
           echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
           docker --version || true
           docker compose version || true
-          which docker-compose || true
           echo "Repo root listing:"
           ls -la
 
@@ -65,7 +64,6 @@ jobs:
           REAL_JWT_SECRET: ${{ secrets.REAL_JWT_SECRET }}
           NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
         run: |
-          # write .env.ci with no leading spaces (safe for YAML)
           printf '%s\n' \
             "GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID" \
             "GOOGLE_CLIENT_SECRET=$GOOGLE_CLIENT_SECRET" \
@@ -77,33 +75,18 @@ jobs:
           chmod 600 .env.ci
           echo ".env.ci created"
 
-      - name: Debug .env.ci and show compose interpolation
+      - name: Debug .env.ci (presence only)
         shell: bash
         run: |
-          echo "---- .env.ci raw (masked by GitHub if secrets) ----"
-          sed -n '1,50p' .env.ci || true
-
-          echo "---- normalize CRLF (if any) ----"
-          tr -d '\r' < .env.ci > .env.ci.tmp && mv .env.ci.tmp .env.ci || true
-
-          echo "---- check presence of keys (prints LINE_PRESENT/MISSING_LINE) ----"
+          echo "---- .env.ci keys (no secret values printed) ----"
           for k in GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET SESSION_SECRET JWT_SECRET NGROK_AUTHTOKEN; do
-            if grep -qE "^${k}=" .env.ci; then
-              echo "$k=LINE_PRESENT"
-            else
-              echo "$k=MISSING_LINE"
-            fi
+            if grep -qE "^${k}=" .env.ci; then echo "$k=LINE_PRESENT"; else echo "$k=MISSING_LINE"; fi
           done
-
-          echo "---- docker compose config (no-interpolate) ----"
-          docker compose --env-file .env.ci -f ./compose.yaml config --no-interpolate || true
-          echo "---- docker compose config (with interpolation) ----"
-          docker compose --env-file .env.ci -f ./compose.yaml config || true
+          tr -d '\r' < .env.ci > .env.ci.tmp && mv .env.ci.tmp .env.ci || true
 
       - name: Show compose file if present
         shell: bash
         run: |
-          echo "Checking for compose.yaml at repo root"
           if [ -f ./compose.yaml ]; then
             echo "Found compose.yaml"
             sed -n '1,200p' ./compose.yaml
@@ -131,6 +114,13 @@ jobs:
           done
           echo "backend did not become healthy" && docker compose -f ./compose.yaml logs backend --no-color --tail 200 || true && exit 1
 
+      - name: Check JWT_SECRET inside backend container
+        shell: bash
+        run: |
+          docker compose --env-file .env.ci -f ./compose.yaml exec -T backend bash -lc '
+            if [ -z "${JWT_SECRET}" ]; then echo "JWT_SECRET=EMPTY"; else echo "JWT_SECRET=SET"; fi
+          '
+
       - name: Install Node
         uses: actions/setup-node@v4
         with:
@@ -139,19 +129,20 @@ jobs:
       - name: Install test dependencies
         shell: bash
         run: |
-          if [ -f package.json ]; then
-            npm ci
-          fi
+          if [ -f package.json ]; then npm ci; fi
 
-      - name: Run full game test
+      - name: Run full game test (generate token file)
         shell: pwsh
         env:
           BASE_URL: ${{ env.BASE_URL }}
           REAL_JWT_SECRET: ${{ env.REAL_JWT_SECRET }}
         run: |
           if (-not $env:REAL_JWT_SECRET) { Write-Error "REAL_JWT_SECRET not set"; exit 1 }
-          $env:PLAYER_A = node -e "const jwt=require('jsonwebtoken'); console.log(jwt.sign({ sub:'ci-player-a', email:'ci_a@example.com', provider:'ci' }, process.env.REAL_JWT_SECRET, { algorithm:'HS256', expiresIn:'7d' }));"
-          $env:PLAYER_B = node -e "const jwt=require('jsonwebtoken'); console.log(jwt.sign({ sub:'ci-player-b', email:'ci_b@example.com', provider:'ci' }, process.env.REAL_JWT_SECRET, { algorithm:'HS256', expiresIn:'7d' }));"
+          $playerA = node -e "const jwt=require('jsonwebtoken'); console.log(jwt.sign({ sub:'ci-player-a', email:'ci_a@example.com', provider:'ci' }, process.env.REAL_JWT_SECRET, { algorithm:'HS256', expiresIn:'7d' }));"
+          $playerB = node -e "const jwt=require('jsonwebtoken'); console.log(jwt.sign({ sub:'ci-player-b', email:'ci_b@example.com', provider:'ci' }, process.env.REAL_JWT_SECRET, { algorithm:'HS256', expiresIn:'7d' }));"
+          Set-Content -Path token.txt -Value $playerA -NoNewline
+          $env:PLAYER_A = $playerA
+          $env:PLAYER_B = $playerB
           try {
             Invoke-RestMethod -Uri "$env:BASE_URL/api/auth/me" -Headers @{ Authorization = "Bearer $env:PLAYER_A" } -Method Get -TimeoutSec 10 | Out-Null
           } catch {
@@ -159,6 +150,20 @@ jobs:
             exit 1
           }
           pwsh ./tests/Test-FullGame.ps1
+
+      - name: Verify test token inside backend container
+        shell: bash
+        run: |
+          if [ ! -f token.txt ]; then echo "token.txt missing"; exit 1; fi
+          TOKEN=$(cat token.txt)
+          docker compose --env-file .env.ci -f ./compose.yaml exec -T backend bash -lc "
+            node -e \"
+              const jwt = require('jsonwebtoken');
+              const token = process.argv[1];
+              try { jwt.verify(token, process.env.JWT_SECRET); console.log('VERIFY_OK'); process.exit(0); }
+              catch (err) { console.error('VERIFY_FAIL:', err.message); process.exit(2); }
+            \" '$TOKEN'
+          "
 
       - name: Collect docker logs on failure
         if: failure()
@@ -179,10 +184,11 @@ jobs:
           path: |
             tests/logs/**
             compose.yaml
+            token.txt
 
       - name: Tear down stack
         if: always()
         shell: bash
         run: |
           docker compose --env-file .env.ci -f ./compose.yaml down -v || true
-          rm -f .env.ci || true
+          rm -f .env.ci token.txt || true
