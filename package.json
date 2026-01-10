@@ -7,7 +7,9 @@
   "scripts": {
     "start": "node index.js",
     "test": "echo \"No unit tests\" && exit 0",
-    "test:move": "node ./test/move-tests.js"
+    "test:move": "node ./tests/move-tests.js",
+    "migrate": "node ./scripts/run-migrations.js",
+    "seed:test": "node ./tests/seed-test-game.js"
   },
   "keywords": [],
   "author": "",
