@@ -14,27 +14,52 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Start backend (example)
+      - name: Set up Docker Compose
+        uses: docker/compose-action@v3
+
+      - name: Start backend
+        run: docker compose up -d --build
+
+
+      - name: Wait for backend health
         run: |
-          # start your test backend here; replace with your start command
-          docker-compose up -d --build
-          # wait for health
-          ./scripts/wait-for-health.sh http://localhost:3000/health 60
+          for i in {1..60}; do
+            if curl -sSf http://localhost:3000/health >/dev/null 2>&1; then
+              echo "backend healthy"
+              exit 0
+            fi
+            echo "waiting for backend... ($i)"
+            sleep 1
+          done
+          echo "backend did not become healthy" && exit 1
 
       - name: Install Node
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
+      - name: Install test dependencies
+        run: |
+          # if your tests rely on a package.json in repo root
+          if [ -f package.json ]; then
+            npm ci
+          fi
+
       - name: Run full game test
         shell: pwsh
         run: |
-          # generate tokens and run the test script in the same shell
-          $env:REAL_JWT_SECRET = '${{ secrets.REAL_JWT_SECRET }}'
+          if (-not $env:REAL_JWT_SECRET) { Write-Error "REAL_JWT_SECRET not set"; exit 1 }
           $env:PLAYER_A = node -e "const jwt=require('jsonwebtoken'); console.log(jwt.sign({ sub:'3', email:'ci_test_google@example.com', provider:'google' }, process.env.REAL_JWT_SECRET, { algorithm:'HS256', expiresIn:'7d' }));"
           $env:PLAYER_B = node -e "const jwt=require('jsonwebtoken'); console.log(jwt.sign({ sub:'7', email:'ci_test_google_b@example.com', provider:'google' }, process.env.REAL_JWT_SECRET, { algorithm:'HS256', expiresIn:'7d' }));"
           pwsh ./tests/Test-FullGame.ps1
-        continue-on-error: false
+
+      - name: Collect docker logs on failure
+        if: failure()
+        run: |
+          echo "=== docker compose ps ==="
+          docker compose ps || true
+          echo "=== backend logs ==="
+          docker compose logs backend --no-color --tail 500 || true
 
       - name: Upload logs on failure
         if: failure()
@@ -44,3 +69,4 @@ jobs:
           path: |
             tests/logs/**
             docker-compose.yml
+            # include docker logs captured above if you redirect them to a file
