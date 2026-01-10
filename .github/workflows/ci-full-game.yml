@@ -160,9 +160,47 @@ jobs:
         run: |
           if [ -f package.json ]; then npm ci; fi
       
-      - name: Give backend a moment to finish init
+      - name: Wait for DB and backend /health
         shell: bash
-        run: sleep 40
+        run: |
+          set -euo pipefail
+
+          echo "Waiting for db container to become healthy..."
+          DB_CONTAINER=$(docker compose -f ./compose.yaml ps -q db)
+          if [ -z "$DB_CONTAINER" ]; then
+            echo "DB container not found; listing containers:" && docker compose -f ./compose.yaml ps
+            exit 1
+          fi
+
+          # wait up to 120s for DB health
+          for i in {1..60}; do
+            STATUS=$(docker inspect --format='{{.State.Health.Status}}' "$DB_CONTAINER" 2>/dev/null || echo "no-health")
+            echo "db health status: $STATUS (attempt $i/60)"
+            if [ "$STATUS" = "healthy" ]; then
+              echo "db healthy"
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "$STATUS" != "healthy" ]; then
+            echo "DB did not become healthy in time" && docker compose -f ./compose.yaml logs db --no-color --tail 200 || true
+            exit 1
+          fi
+
+          echo "Waiting for backend /health..."
+          for i in {1..120}; do
+            if curl -sSf http://localhost:3000/health >/dev/null 2>&1; then
+              echo "backend healthy"
+              exit 0
+            fi
+            echo "waiting for backend... ($i)"
+            docker compose -f ./compose.yaml logs backend --no-color --tail 20 || true
+            sleep 1
+          done
+
+          echo "backend did not become healthy" && docker compose -f ./compose.yaml logs backend --no-color --tail 200 || true && exit 1
+
 
       - name: Run full game test (generate token file)
         shell: pwsh
