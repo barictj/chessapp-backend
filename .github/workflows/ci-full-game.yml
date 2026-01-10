@@ -11,6 +11,14 @@ jobs:
   ci-full-game:
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    env:
+      WAIT_DB_RETRIES: 150
+      WAIT_DB_INTERVAL_MS: 2000
+      # optional: increase workflow polling if you want a longer host-side wait
+      WORKFLOW_BACKEND_POLL_RETRIES: 240
+      WORKFLOW_BACKEND_POLL_SLEEP: 2
+
+    
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -70,29 +78,51 @@ jobs:
           echo "=== docker container ls (recent) ==="
           docker ps --format "table {{.ID}}\t{{.Image}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}" || true
 
-      - name: Wait for backend health with verbose logging
+      - name: Wait for DB then backend health with verbose logging
         shell: bash
         run: |
           set -euo pipefail
-          echo "=== Waiting for backend health at ${BASE_URL:-http://localhost:3000}/health ==="
-          for i in $(seq 1 120); do
-            echo "wait iteration $i/120: curling http://localhost:3000/health ..."
+          echo "=== Waiting for DB health then backend health ==="
+          DB_CONTAINER=$(docker compose --env-file .env.ci -f compose.yaml ps -q db || true)
+          if [ -z "$DB_CONTAINER" ]; then
+            echo "DB container not found; showing compose ps"
+            docker compose --env-file .env.ci -f compose.yaml ps -a || true
+          fi
+
+          # Poll DB health (uses compose healthcheck if present)
+          echo "Waiting for DB container $DB_CONTAINER to report healthy..."
+          for i in $(seq 1 60); do
+            STATUS=$(docker inspect --format '{{.State.Health.Status}}' "$DB_CONTAINER" 2>/dev/null || echo unknown)
+            echo "DB health: $STATUS (attempt $i/60)"
+            if [ "$STATUS" = "healthy" ]; then
+              echo "DB is healthy"
+              break
+            fi
+            sleep 2
+          done
+
+          # Then poll backend health using workflow env vars
+          echo "Waiting for backend health at ${BASE_URL:-http://localhost:3000}/health ..."
+          MAX=${WORKFLOW_BACKEND_POLL_RETRIES:-240}
+          SLEEP=${WORKFLOW_BACKEND_POLL_SLEEP:-2}
+          for i in $(seq 1 $MAX); do
+            echo "wait iteration $i/$MAX: curling http://localhost:3000/health ..."
             HTTP_STATUS=$(curl -s -o /tmp/health_resp.txt -w "%{http_code}" http://localhost:3000/health || true)
             echo "HTTP status: $HTTP_STATUS"
             if [ "$HTTP_STATUS" = "200" ]; then
               echo "backend healthy at attempt $i"
-              echo "health response:"
               sed -n '1,200p' /tmp/health_resp.txt || true
               exit 0
             fi
             echo "not healthy yet; tail backend logs (last 50 lines):"
             docker compose --env-file .env.ci -f compose.yaml logs backend --tail 50 || true
-            sleep 2
+            sleep $SLEEP
           done
+
           echo "backend did not become healthy within timeout"
-          echo "final backend logs (tail 500):"
           docker compose --env-file .env.ci -f compose.yaml logs backend --tail 500 || true
           exit 1
+
 
       - name: Debug container state (post-health)
         if: success()
