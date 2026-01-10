@@ -37,8 +37,8 @@ jobs:
             chmod +x "$DOCKER_CONFIG/cli-plugins/docker-compose"
           fi
 
-        docker compose version || true
-        pwsh --version || true
+          docker compose version || true
+          pwsh --version || true
 
       - name: Install prerequisites
         shell: bash
