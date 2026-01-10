@@ -150,6 +150,18 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Debug runner environment (temporary)
+        run: |
+          set -x
+          echo "Running on $(uname -a)"
+          which node || true
+          node -v || true
+          pwd
+          ls -la
+          # show the workflow file lines around any node invocation
+          grep -nR "node -e" .github || true
+
+
       - name: Generate JWTs for players sub 3 and sub 7 and export
         shell: bash
         env:
