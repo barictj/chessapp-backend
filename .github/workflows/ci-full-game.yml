@@ -188,25 +188,25 @@ jobs:
               catch (err) { console.error('VERIFY_FAIL:', err.message); process.exit(2); }
             \" '$TOKEN'
           "
-      - name: Ensure CI user exists in DB
+      - name: Ensure CI Google users exist in DB
         shell: bash
         run: |
-          echo "Checking for ci-player-a in DB and inserting if missing..."
+          echo "Seeding CI Google users (idempotent)..."
           docker compose exec -T db mysql -uroot -pexample -e "
-            CREATE DATABASE IF NOT EXISTS chess;
             USE chess;
-            CREATE TABLE IF NOT EXISTS users (
-              id BIGINT AUTO_INCREMENT PRIMARY KEY,
-              sub VARCHAR(255) UNIQUE,
-              email VARCHAR(255),
-              provider VARCHAR(50),
-              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-            INSERT INTO users (sub, email, provider, created_at)
-              VALUES ('ci-player-a','ci_a@example.com','ci', NOW())
-              ON DUPLICATE KEY UPDATE email=VALUES(email);
-            SELECT id, sub, email, provider FROM users WHERE sub='ci-player-a' LIMIT 1;
+            -- Insert a user whose google_id matches the CI token 'sub' (ci-player-a)
+            INSERT INTO users (username, email, google_id, display_name, avatar_url, provider, is_active, created_at)
+            VALUES ('ci_test_google', 'ci_test_google@example.com', 'ci-player-a', 'CI Google Test', 'https://example.com/avatar-ci.png', 'google', 1, NOW())
+            ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id);
+
+            -- Optional second fixture
+            INSERT INTO users (username, email, google_id, display_name, avatar_url, provider, is_active, created_at)
+            VALUES ('ci_test_google_b', 'ci_test_google_b@example.com', 'ci-google-0002', 'CI Google Test B', 'https://example.com/avatar-ci-b.png', 'google', 1, NOW())
+            ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id);
+
+            SELECT id, username, email, google_id, provider, is_active FROM users WHERE google_id IN ('ci-player-a','ci-google-0002');
           "
+
 
       - name: Run full game test
         shell: pwsh
