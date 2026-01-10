@@ -1,3 +1,4 @@
+// chess/backend/db/index.js
 import { pool } from '../index.js';
 
 import { usersTable } from './users.sql.js';

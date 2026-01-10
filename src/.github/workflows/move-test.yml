@@ -1,0 +1,87 @@
+name: Move pipeline tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  move-tests:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: rootpass
+          MYSQL_DATABASE: chess_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -prootpass"
+          --health-interval=5s --health-timeout=2s --health-retries=10
+
+    env:
+      BASE_URL: http://localhost:3000/api/games
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_USER: root
+      DB_PASS: rootpass
+      DB_NAME: chess_test
+      WHITE_TOKEN: ${{ eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjEsImVtYWlsIjoiYmFyaWN0akBnbWFpbC5jb20iLCJuYW1lIjoiVGhvbWFzIEJhcmljIiwiaWF0IjoxNzY3OTkyOTY4LCJleHAiOjE3Njg1OTc3Njh9.nzQ3pH7mVGS7NGc4uQzj8A8DHsoZ29ZQpPA8jUPp4gs }}
+      BLACK_TOKEN: ${{ eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjIsImVtYWlsIjoiZG90cmVkdWNlQGdtYWlsLmNvbSIsIm5hbWUiOiJUaG9tYXMgQmFyaWMiLCJpYXQiOjE3Njc5OTM4OTMsImV4cCI6MTc2ODU5ODY5M30.HOJUx3GYVKPvaT04vw-CDXurqYsIl4t1BMXyUdwF1Lc }}
+      GAME_ID: 35
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Wait for MySQL
+        run: |
+          for i in {1..30}; do
+            mysql -h127.0.0.1 -uroot -prootpass -e "SELECT 1" && break
+            echo "Waiting for mysql..."
+            sleep 2
+          done
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run DB migrations and seed test data
+        run: |
+          # Example: run your migration/seed scripts here
+          # Replace with your actual migration/seed commands
+          node ./scripts/run-migrations.js --env=test
+          node ./scripts/seed-test-game.js --game-id=${{ env.GAME_ID }}
+
+      - name: Start backend (background)
+        run: |
+          # If you use docker-compose, start it here. Example:
+          docker-compose up -d --build
+          # Or start node directly:
+          # nohup npm start &
+
+      - name: Wait for backend
+        run: |
+          for i in {1..30}; do
+            curl -sSf http://localhost:3000/health && break
+            echo "Waiting for backend..."
+            sleep 2
+          done
+
+      - name: Run move tests
+        run: |
+          node ./tests/move-tests.js
+        # If the script exits non-zero on failure, the job will fail
+
+      - name: DB consistency check
+        run: |
+          mysql -h127.0.0.1 -uroot -prootpass -D chess_test -e "
+            SELECT g.id, g.fen, g.turn, g.last_move_id FROM games g WHERE id = ${GAME_ID};
+            SELECT game_id, request_id, COUNT(*) c FROM moves WHERE request_id IS NOT NULL GROUP BY game_id, request_id HAVING c > 1;
+          "

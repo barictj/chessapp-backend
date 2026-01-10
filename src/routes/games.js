@@ -20,7 +20,7 @@ router.post('/:id/move', requireAuth, async (req, res) => {
     try {
         const gameId = Number(req.params.id);
         const userId = Number(req.user?.id ?? req.user?.sub);
-
+        const requestId = req.body.request_id || req.body.requestId; if (!requestId) return res.status(400).json({ error: "Missing request_id" });
         // normalize body fields (drop-in)
         const fromSquare = req.body.from || req.body.from_square || req.body.fromSquare || req.body.fromSquareRaw;
         const toSquare = req.body.to || req.body.to_square || req.body.toSquare || req.body.toSquareRaw;
@@ -33,7 +33,8 @@ router.post('/:id/move', requireAuth, async (req, res) => {
             userId,
             String(fromSquare).trim().toLowerCase(),
             String(toSquare).trim().toLowerCase(),
-            promotion
+            promotion,
+            String(requestId).trim()
         );
 
         res.json(result);
@@ -42,6 +43,25 @@ router.post('/:id/move', requireAuth, async (req, res) => {
     }
 });
 
+// GET /api/games/:id/moves
+router.get('/:id/moves', requireAuth, async (req, res) => {
+    try {
+        const gameId = Number(req.params.id);
+        const userId = Number(req.user?.id ?? req.user?.sub);
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+        // verify access (getGameById should enforce participant access)
+        const game = await getGameById(gameId, userId);
+        if (!game) return res.status(404).json({ error: 'Game not found or access denied' });
+
+        // implement getMovesForGame in db layer or reuse existing helper
+        const moves = await getMovesForGame(gameId); // returns rows ordered by id ASC
+        return res.json(moves);
+    } catch (err) {
+        console.error('GET /:id/moves error', err);
+        return res.status(400).json({ error: err.message });
+    }
+});
 
 
 // routes/games.js

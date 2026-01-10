@@ -1,3 +1,5 @@
+// src/db/games.js
+
 import { pool } from './index.js';
 
 export async function createGame({ white_user_id, black_user_id = null, bot_id = null }) {

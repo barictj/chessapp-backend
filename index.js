@@ -5,8 +5,7 @@ import jwt from 'jsonwebtoken';
 import mysql from 'mysql2/promise';
 
 import { requireAuth, configureAuth } from './auth.js';
-import { initializeDatabase } from './db/init.js';
-
+import { initSchema } from './db/index.js';
 // Route imports
 import gamesRoutes from './src/routes/games.js';
 import movesRoutes from './src/routes/moves.js';
@@ -33,6 +32,23 @@ const {
   JWT_SECRET,
   BASE_URL,
 } = process.env;
+async function waitForDB() {
+  const maxRetries = 50;
+  const delay = ms => new Promise(res => setTimeout(res, ms));
+
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      await pool.query("SELECT 1");
+      console.log("Database is ready.");
+      return;
+    } catch (err) {
+      console.log(`DB not ready yet (${i + 1}/${maxRetries})...`);
+      await delay(1000);
+    }
+  }
+
+  throw new Error("Database did not become ready in time.");
+}
 
 // Create express app
 const app = express();
@@ -42,8 +58,8 @@ const app = express();
 // -------------------------
 (async () => {
   // Initialize DB before anything else
-  await initializeDatabase();
-
+  await waitForDB();
+  await initSchema();
   // Middleware
   app.use(cors({ origin: '*', credentials: true }));
   app.use(express.json());

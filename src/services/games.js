@@ -31,214 +31,166 @@ export async function createGame(creatorId, opponentId = null, botId = null) {
  * - transactional: locks game row, computes move number, applies move, inserts move, updates games
  * - prefers from/to; accepts promotion; returns inserted move row + updated game state
  */
-export async function makeMove(gameId, userId, from, to, promotion = null) {
-    console.log('TRANSACTIONAL makeMove invoked', { gameId, userId, from, to });
+export async function makeMove(gameId, userId, from, to, promotion = null, requestId) {
+    console.log("MAKE MOVE ARGS:", { gameId, userId, from, to, promotion, requestId });
+
+    if (!requestId) {
+        throw Object.assign(new Error('Missing requestId'), { code: 'MISSING_REQUEST_ID' });
+    }
 
     let conn;
+    let fenAfter; // visible to setImmediate verification
     try {
-        console.log('makeMove: acquiring DB connection');
         conn = await pool.getConnection();
-        console.log('makeMove: acquired DB connection');
-
         await conn.beginTransaction();
 
-        // Lock game row
-        const [games] = await conn.query(`SELECT * FROM games WHERE id = ? FOR UPDATE`, [gameId]);
-        console.log(
-            'makeMove: games rows length:',
-            games.length,
-            'firstRow:',
-            games[0]
-                ? {
-                    id: games[0].id,
-                    fen: games[0].fen,
-                    turn: games[0].turn,
-                    status: games[0].status,
-                    white_user_id: games[0].white_user_id,
-                    black_user_id: games[0].black_user_id
-                }
-                : null
+        // Lock game row FIRST
+        const [gameRows] = await conn.query(
+            `SELECT * FROM games WHERE id = ? FOR UPDATE`,
+            [gameId]
         );
-        if (games.length === 0) throw new Error('Game not found');
-        const game = games[0];
+        if (gameRows.length === 0) {
+            throw Object.assign(new Error('Game not found'), { code: 'GAME_NOT_FOUND' });
+        }
+        const game = gameRows[0];
 
-        if (game.status === 'completed' || game.status === 'abandoned') throw new Error('Game is not active');
+        // Idempotency check AFTER lock
+        const [existing] = await conn.query(
+            `SELECT * FROM moves WHERE game_id = ? AND request_id = ? LIMIT 1`,
+            [gameId, requestId]
+        );
+
+        if (existing.length > 0) {
+            await conn.commit();
+            return {
+                gameId,
+                move: existing[0],
+                fen: existing[0].fen_after,
+                pgn: game.pgn,
+                turn: game.turn,
+                status: game.status,
+                result: game.result,
+                idempotent: true
+            };
+        }
+
+        // Game must be active
+        if (game.status === 'completed' || game.status === 'abandoned') {
+            throw Object.assign(new Error('Game is not active'), { code: 'GAME_NOT_ACTIVE' });
+        }
 
         // Determine player color
         let playerColor;
         if (Number(game.white_user_id) === Number(userId)) playerColor = 'w';
         else if (Number(game.black_user_id) === Number(userId)) playerColor = 'b';
-        else throw new Error('User is not a player in this game');
+        else throw Object.assign(new Error('User is not a player in this game'), { code: 'NOT_A_PLAYER' });
 
-        // Compute move count and move number inside transaction
-        const [countRows] = await conn.query(`SELECT COUNT(*) AS cnt FROM moves WHERE game_id = ?`, [gameId]);
-        const moveCount = Number(countRows[0].cnt); // number of moves already stored
-        const moveNumber = Math.floor(moveCount / 2) + 1; // 1-based move number
-        const expectedColor = (moveCount % 2 === 0) ? 'w' : 'b'; // if 0 moves -> white to move
-
-        // DEBUG: show moveCount/turn expectations so we can trace why execution stops
-        console.log('makeMove: moveCount:', moveCount, 'moveNumber:', moveNumber, 'expectedColor:', expectedColor, 'playerColor (so far):', playerColor);
-
-        if (expectedColor !== playerColor) throw new Error('Not your turn');
+        // Use authoritative game.turn to check turn
+        if (game.turn !== playerColor) {
+            throw Object.assign(new Error('Not your turn'), { code: 'NOT_YOUR_TURN' });
+        }
 
         // Normalize inputs
         if (typeof from === 'string') from = from.trim().toLowerCase();
         if (typeof to === 'string') to = to.trim().toLowerCase();
         if (promotion) promotion = String(promotion).trim().toLowerCase();
 
-        // Build chess position from game.fen or fallback to last fen_after, then replay moves if needed
-        let chess;
-        let loaded = false;
+        //
+        // --- RECONSTRUCT BOARD STATE using authoritative game.fen ---
+        //
+        const chess = new Chess(game.fen && game.fen !== 'startpos' ? game.fen : undefined);
 
-        // 1) Try to initialize chess from game.fen using constructor (works across versions)
+        const [moves] = await conn.query(
+            `SELECT from_square, to_square, san, request_id, fen_after
+             FROM moves
+             WHERE game_id = ?
+             ORDER BY id ASC`,
+            [gameId]
+        );
+
+        // If game.fen is present and matches last move's fen_after, no replay needed.
+        // Otherwise, replay moves to reach current state (defensive).
+        if (!game.fen || game.fen === 'startpos') {
+            // already initialized from startpos
+        } else {
+            // If moves exist and last move's fen_after differs from game.fen, prefer game.fen as authoritative.
+            // We still keep chess initialized from game.fen above.
+        }
+
+        console.log("DEBUG FEN BEFORE APPLY:", chess.fen(), { gameId, requestId });
+        console.log("DEBUG MOVES REPLAYED:", moves, { gameId, requestId });
+
+        const moveObj = { from, to };
+        if (promotion) moveObj.promotion = promotion;
+        console.log("DEBUG MOVE OBJ:", moveObj, { gameId, requestId });
+
+        const applied = chess.move(moveObj);
+        if (!applied) throw Object.assign(new Error(`Illegal move from ${from} to ${to}`), { code: 'INVALID_MOVE' });
+
+        fenAfter = chess.fen();
+        const pgn = chess.pgn();
+        const nextTurn = chess.turn();
+        const color = applied.color;
+
+        //
+        // --- INSERT MOVE with duplicate-insert handling ---
+        //
+        let newMoveId;
         try {
-            if (game.fen && game.fen !== 'startpos') {
-                chess = new Chess(game.fen);
-                // If constructor didn't throw, consider it loaded
-                loaded = true;
-                console.log('makeMove: initialized chess from game.fen via constructor');
-            } else {
-                chess = new Chess();
-            }
-        } catch (e) {
-            // constructor failed for this fen; fall back to empty board and try last fen_after
-            chess = new Chess();
-            loaded = false;
-            console.warn('makeMove: constructor init from game.fen failed:', e && e.message);
-        }
-
-        // 2) If not loaded, try last fen_after from moves
-        if (!loaded) {
-            try {
-                const [lastFenRows] = await conn.query(
-                    `SELECT fen_after FROM moves WHERE game_id = ? AND fen_after IS NOT NULL ORDER BY id DESC LIMIT 1`,
-                    [gameId]
-                );
-                if (lastFenRows && lastFenRows.length > 0 && lastFenRows[0].fen_after) {
-                    try {
-                        // try constructor with last fen_after
-                        chess = new Chess(lastFenRows[0].fen_after);
-                        loaded = true;
-                        console.log('makeMove: initialized chess from last moves.fen_after via constructor');
-                    } catch (e) {
-                        loaded = false;
-                        console.warn('makeMove: constructor init from last fen_after failed:', e && e.message);
-                    }
-                }
-            } catch (e) {
-                loaded = false;
-            }
-        }
-
-        console.log('makeMove: loadedFromGameFen:', loaded, 'game.fen length:', game.fen ? game.fen.length : 0);
-
-        // 3) If still not loaded, replay moves (deterministic: try from/to first, then SAN)
-        if (!loaded) {
-            console.log('makeMove: replaying moves to reconstruct position');
-
-            // fetch moves to replay
-            const [rows] = await conn.query(
-                `SELECT id, san, from_square, to_square, fen_after FROM moves WHERE game_id = ? ORDER BY id ASC`,
+            // compute move_number defensively from existing moves count
+            const [countRows] = await conn.query(
+                `SELECT COUNT(*) AS cnt FROM moves WHERE game_id = ?`,
                 [gameId]
             );
+            const moveCount = Number(countRows[0].cnt);
+            const moveNumber = Math.floor(moveCount / 2) + 1;
 
-            // log after rows is available
-            console.log('makeMove: replay rows count:', rows.length);
-
-            for (const m of rows) {
-                // if a fen_after exists and can be loaded, prefer it (fast path)
-                if (m.fen_after) {
-                    try {
-                        const testChess = new Chess(m.fen_after);
-                        // if constructor succeeded, replace chess and continue
-                        chess = testChess;
-                        continue;
-                    } catch (e) {
-                        // ignore and try to apply move
-                    }
-                }
-
-                // debug: show board before attempting this replay move
-                console.log('makeMove: before replay move, chess.fen():', chess.fen(), 'attempting move row:', m);
-
-                // Try applying by from/to first (deterministic)
-                let applied = null;
-                if (m.from_square && m.to_square) {
-                    try {
-                        applied = chess.move({ from: m.from_square, to: m.to_square, promotion: 'q' });
-                    } catch (e) {
-                        applied = null;
-                    }
-                }
-
-                // If from/to didn't apply, try SAN with sloppy parsing
-                if (!applied && m.san) {
-                    try {
-                        applied = chess.move(m.san, { sloppy: true });
-                    } catch (e) {
-                        applied = null;
-                    }
-                }
-
-                // debug: show whether applied and board after attempt
-                console.log('makeMove: after replay attempt, applied:', !!applied, 'chess.fen():', chess.fen());
-
-                if (!applied) {
-                    console.error('makeMove: failed to replay move row:', m);
-                    throw new Error(`Failed to replay moves to recover game state (failing move id=${m.id})`);
+            const [insertResult] = await conn.query(
+                `INSERT INTO moves
+                 (game_id, move_number, player_color, san, from_square, to_square, fen_after, request_id)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                [gameId, moveNumber, color, applied.san, from, to, fenAfter, requestId]
+            );
+            newMoveId = insertResult.insertId;
+        } catch (err) {
+            // Handle unique constraint race on (game_id, request_id)
+            if (err && err.code === 'ER_DUP_ENTRY') {
+                const [rows] = await conn.query(
+                    `SELECT * FROM moves WHERE game_id = ? AND request_id = ? LIMIT 1`,
+                    [gameId, requestId]
+                );
+                if (rows.length > 0) {
+                    await conn.commit();
+                    return {
+                        gameId,
+                        move: rows[0],
+                        fen: rows[0].fen_after,
+                        pgn: game.pgn,
+                        turn: game.turn,
+                        status: game.status,
+                        result: game.result,
+                        idempotent: true
+                    };
                 }
             }
+            throw err;
         }
 
-        // DEBUG: inspect request + board state (remove/comment out after debugging)
-        console.log('MOVE REQ seen by service:', { gameId, userId, from, to, promotion });
-        console.log('Loaded FEN:', chess.fen());
-        console.log('chess.turn():', chess.turn());
-        console.log('Piece at from:', chess.get(from));
-        console.log('Legal moves from', from, ':', chess.moves({ square: from }));
-
-        // Apply incoming move (prefer from/to)
-        let applied = null;
-        if (from && to) {
-            const moveObj = { from, to };
-            if (promotion) moveObj.promotion = promotion;
-            applied = chess.move(moveObj);
-        } else {
-            throw new Error('Invalid move payload: from and to required');
-        }
-
-        if (!applied) {
-            // server-side log for debugging (commented out in production)
-            // console.error('Illegal move', { gameId, userId, from, to, fen: chess.fen(), turn: chess.turn(), legal: chess.moves({ square: from }) });
-            throw new Error(`Illegal move from ${from} to ${to}`);
-        }
-
-        // Prepare metadata
-        const fenAfter = chess.fen();
-        const pgn = chess.pgn();
-        const nextTurn = chess.turn(); // 'w' or 'b'
-        const color = applied.color; // 'w' or 'b'
-
-        // Insert move
-        const [insertResult] = await conn.query(
-            `INSERT INTO moves (game_id, move_number, player_color, san, from_square, to_square, fen_after)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            [gameId, moveNumber, color, applied.san, from, to, fenAfter]
-        );
-        const newMoveId = insertResult.insertId;
-
-        // Determine game status/result
-        const isCheckmate = typeof chess.isCheckmate === 'function' ? chess.isCheckmate() : (typeof chess.in_checkmate === 'function' ? chess.in_checkmate() : false);
-        const isStalemate = typeof chess.isStalemate === 'function' ? chess.isStalemate() : (typeof chess.in_stalemate === 'function' ? chess.in_stalemate() : false);
-        const isInsufficient = typeof chess.isInsufficientMaterial === 'function' ? chess.isInsufficientMaterial() : (typeof chess.insufficient_material === 'function' ? chess.insufficient_material() : false);
-        const isThreefold = typeof chess.isThreefoldRepetition === 'function' ? chess.isThreefoldRepetition() : (typeof chess.in_threefold_repetition === 'function' ? chess.in_threefold_repetition() : false);
-        const isDraw = typeof chess.isDraw === 'function' ? chess.isDraw() : (typeof chess.in_draw === 'function' ? chess.in_draw() : false);
+        //
+        // --- UPDATE GAME ROW including last_move_id ---
+        //
+        const isCheckmate = chess.isCheckmate?.() || chess.in_checkmate?.();
+        const isStalemate = chess.isStalemate?.() || chess.in_stalemate?.();
+        const isInsufficient = chess.isInsufficientMaterial?.() || chess.insufficient_material?.();
+        const isThreefold = chess.isThreefoldRepetition?.() || chess.in_threefold_repetition?.();
+        const isDraw = chess.isDraw?.() || chess.in_draw?.();
 
         let newStatus = game.status;
         let newResult = null;
+
         if (isCheckmate) {
             newStatus = 'completed';
-            newResult = (color === 'w') ? 'white' : 'black';
+            newResult = color === 'w' ? 'white' : 'black';
         } else if (isStalemate || isInsufficient || isThreefold || isDraw) {
             newStatus = 'completed';
             newResult = 'draw';
@@ -246,42 +198,84 @@ export async function makeMove(gameId, userId, from, to, promotion = null) {
             newStatus = 'active';
         }
 
-        // Update games row (no optional columns required)
         if (newStatus === 'completed') {
             await conn.query(
-                `UPDATE games SET fen = ?, pgn = ?, turn = ?, status = ?, result = ?, completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-                [fenAfter, pgn, nextTurn, newStatus, newResult, gameId]
+                `UPDATE games
+                 SET fen = ?, pgn = ?, turn = ?, status = ?, result = ?, last_move_id = ?, completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                 WHERE id = ?`,
+                [fenAfter, pgn, nextTurn, newStatus, newResult, newMoveId, gameId]
             );
         } else {
             await conn.query(
-                `UPDATE games SET fen = ?, pgn = ?, turn = ?, status = ?, result = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-                [fenAfter, pgn, nextTurn, newStatus, gameId]
+                `UPDATE games
+                 SET fen = ?, pgn = ?, turn = ?, status = ?, result = NULL, last_move_id = ?, updated_at = CURRENT_TIMESTAMP
+                 WHERE id = ?`,
+                [fenAfter, pgn, nextTurn, newStatus, newMoveId, gameId]
             );
         }
 
-        // Fetch inserted move row
-        const [moveRows] = await conn.query(`SELECT * FROM moves WHERE id = ? LIMIT 1`, [newMoveId]);
-        const insertedMove = moveRows[0];
-
+        //
+        // --- COMMIT ---
+        //
         await conn.commit();
+
+        //
+        // --- RETURN RESULT including authoritative game row ---
+        //
+        const [moveRows] = await conn.query(
+            `SELECT * FROM moves WHERE id = ? LIMIT 1`,
+            [newMoveId]
+        );
+        const [gameAfterRows] = await conn.query(
+            `SELECT * FROM games WHERE id = ? LIMIT 1`,
+            [gameId]
+        );
 
         return {
             gameId,
-            move: insertedMove,
+            move: moveRows[0],
+            game: gameAfterRows[0],
             fen: fenAfter,
             pgn,
             turn: nextTurn,
             status: newStatus,
             result: newResult
         };
+
     } catch (err) {
         if (conn) await conn.rollback();
+        // rethrow structured errors as-is
         throw err;
     } finally {
         if (conn) conn.release();
     }
-}
 
+    // AFTER committing the move and releasing the connection
+    setImmediate(async () => {
+        try {
+            if (!fenAfter) return;
+
+            const verify = new Chess();
+
+            const [allMoves] = await pool.query(
+                `SELECT from_square, to_square, promotion FROM moves WHERE game_id = ? ORDER BY id ASC`,
+                [gameId]
+            );
+
+            for (const m of allMoves) {
+                const mv = { from: m.from_square, to: m.to_square };
+                if (m.promotion) mv.promotion = m.promotion;
+                verify.move(mv);
+            }
+
+            if (verify.fen() !== fenAfter) {
+                console.error("FEN mismatch detected for game", gameId, { expected: fenAfter, actual: verify.fen() });
+            }
+        } catch (err) {
+            console.error("FEN verify error for game", gameId, err);
+        }
+    });
+}
 // Get a single game (with access control)
 export async function getGameById(gameId, userId) {
     return await fetchGameById(gameId, userId);
