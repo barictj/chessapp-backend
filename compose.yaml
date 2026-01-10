@@ -26,21 +26,18 @@ services:
       db:
         condition: service_healthy
 
-  db:
-    image: mysql:8.0
-    command: --default-authentication-plugin=mysql_native_password
-    environment:
-      environment:
-        MYSQL_ROOT_PASSWORD: example
-        MYSQL_DATABASE: chess
-        MYSQL_USER: chess
-        MYSQL_PASSWORD: chesspass
-
-    ports:
-      - "3306:3306"
-    healthcheck:
-      test: [ "CMD-SHELL", "mysqladmin ping -h localhost -u root -pexample" ]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 10s
+db:
+  image: mysql:8
+  command: --default-authentication-plugin=mysql_native_password
+  environment:
+    MYSQL_ROOT_PASSWORD: example
+    MYSQL_DATABASE: chess
+    MYSQL_USER: chess
+    MYSQL_PASSWORD: chesspass
+  ports:
+    - "3306:3306"
+  healthcheck:
+    test: [ "CMD-SHELL", "mysqladmin ping -h localhost -u chess -pchesspass" ]
+    interval: 10s
+    timeout: 5s
+    retries: 10
