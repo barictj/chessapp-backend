@@ -17,28 +17,64 @@ jobs:
 
       - name: Runner debug
         run: |
-          echo "GITHUB_REF=$GITHUB_REF"
-          echo "GITHUB_SHA=$GITHUB_SHA"
+          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
           docker --version || true
           docker compose version || true
           which docker-compose || true
+          echo "Repo root listing:"
+          ls -la
 
-      # start the stack using the explicit repo-root compose file
-      - name: Start backend (explicit compose file)
+      - name: Install Docker Compose plugin
         run: |
-          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
-          echo "Checking for compose file at $GITHUB_WORKSPACE/compose.yaml"
-          if [ -f "$GITHUB_WORKSPACE/compose.yaml" ]; then
-            echo "Found compose file"
-            sed -n '1,200p' "$GITHUB_WORKSPACE/compose.yaml"
-            docker compose -f "$GITHUB_WORKSPACE/compose.yaml" up -d --build
-          else
-            echo "ERROR: compose file not found at $GITHUB_WORKSPACE/compose.yaml"
-            ls -la "$GITHUB_WORKSPACE"
-            exit 14
+          sudo apt-get update
+          sudo apt-get install -y curl
+          DOCKER_CONFIG=${DOCKER_CONFIG:-$HOME/.docker}
+          mkdir -p $DOCKER_CONFIG/cli-plugins
+          curl -SL "https://github.com/docker/compose/releases/download/v2.20.2/docker-compose-linux-x86_64" -o $DOCKER_CONFIG/cli-plugins/docker-compose
+          chmod +x $DOCKER_CONFIG/cli-plugins/docker-compose
+          docker compose version
+
+      - name: Ensure required secrets exist
+        run: |
+          missing=0
+          for s in GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET SESSION_SECRET REAL_JWT_SECRET; do
+            if [ -z "${{ secrets[$s] }}" ]; then
+              echo "Missing secret: $s"
+              missing=1
+            fi
+          done
+          if [ "$missing" -eq 1 ]; then
+            echo "One or more required secrets are missing. Aborting."
+            exit 1
           fi
 
-      # wait for health
+      - name: Create CI env file from secrets
+        run: |
+          cat > .env.ci <<EOF
+          GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}
+          SESSION_SECRET=${{ secrets.SESSION_SECRET }}
+          JWT_SECRET=${{ secrets.REAL_JWT_SECRET }}
+          BASE_URL=http://localhost:3000
+          EOF
+          chmod 600 .env.ci
+          echo ".env.ci created"
+
+      - name: Show compose file if present
+        run: |
+          echo "Checking for compose.yaml at repo root"
+          if [ -f ./compose.yaml ]; then
+            echo "Found compose.yaml"
+            sed -n '1,200p' ./compose.yaml
+          else
+            echo "ERROR: compose.yaml not found at repo root"
+            ls -la
+            exit 1
+          fi
+
+      - name: Start stack
+        run: docker compose --env-file .env.ci -f ./compose.yaml up -d --build
+
       - name: Wait for backend health
         run: |
           for i in {1..120}; do
@@ -50,19 +86,6 @@ jobs:
             sleep 1
           done
           echo "backend did not become healthy" && exit 1
-
-      # collect logs using the same explicit file
-      - name: Collect docker logs on failure
-        if: failure()
-        run: |
-          echo "=== docker compose ps ==="
-          docker compose -f "$GITHUB_WORKSPACE/compose.yaml" ps || true
-          echo "=== backend logs ==="
-          docker compose -f "$GITHUB_WORKSPACE/compose.yaml" logs backend --no-color --tail 500 || true
-
-
-      - name: Show compose config
-        run: docker compose config || true
 
       - name: Install Node
         uses: actions/setup-node@v4
@@ -81,7 +104,6 @@ jobs:
           if (-not $env:REAL_JWT_SECRET) { Write-Error "REAL_JWT_SECRET not set"; exit 1 }
           $env:PLAYER_A = node -e "const jwt=require('jsonwebtoken'); console.log(jwt.sign({ sub:'ci-player-a', email:'ci_a@example.com', provider:'ci' }, process.env.REAL_JWT_SECRET, { algorithm:'HS256', expiresIn:'7d' }));"
           $env:PLAYER_B = node -e "const jwt=require('jsonwebtoken'); console.log(jwt.sign({ sub:'ci-player-b', email:'ci_b@example.com', provider:'ci' }, process.env.REAL_JWT_SECRET, { algorithm:'HS256', expiresIn:'7d' }));"
-          # optional preflight auth check
           try {
             Invoke-RestMethod -Uri "$env:BASE_URL/api/auth/me" -Headers @{ Authorization = "Bearer $env:PLAYER_A" } -Method Get -TimeoutSec 10 | Out-Null
           } catch {
@@ -94,9 +116,11 @@ jobs:
         if: failure()
         run: |
           echo "=== docker compose ps ==="
-          docker compose ps || true
+          docker compose -f ./compose.yaml ps || true
           echo "=== backend logs ==="
-          docker compose logs backend --no-color --tail 500 || true
+          docker compose -f ./compose.yaml logs backend --no-color --tail 500 || true
+          echo "=== container list ==="
+          docker ps -a || true
 
       - name: Upload logs on failure
         if: failure()
@@ -105,4 +129,10 @@ jobs:
           name: ci-full-game-logs
           path: |
             tests/logs/**
-            docker-compose.yml
+            compose.yaml
+
+      - name: Tear down stack
+        if: always()
+        run: |
+          docker compose --env-file .env.ci -f ./compose.yaml down -v || true
+          rm -f .env.ci || true
