@@ -100,9 +100,36 @@ jobs:
         shell: bash
         run: docker compose --env-file .env.ci -f ./compose.yaml up -d --build
 
-      - name: Wait for backend health
+            - name: Wait for DB and backend health
         shell: bash
         run: |
+          set -euo pipefail
+
+          # Wait for DB container to report healthy via Docker healthcheck
+          echo "Waiting for db container to become healthy..."
+          DB_CONTAINER=$(docker compose -f ./compose.yaml ps -q db)
+          if [ -z "$DB_CONTAINER" ]; then
+            echo "DB container not found; listing containers:" && docker compose -f ./compose.yaml ps
+            exit 1
+          fi
+
+          for i in {1..60}; do
+            STATUS=$(docker inspect --format='{{.State.Health.Status}}' "$DB_CONTAINER" 2>/dev/null || echo "no-health")
+            echo "db health status: $STATUS (attempt $i/60)"
+            if [ "$STATUS" = "healthy" ]; then
+              echo "db healthy"
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "$STATUS" != "healthy" ]; then
+            echo "DB did not become healthy in time" && docker compose -f ./compose.yaml logs db --no-color --tail 200 || true
+            exit 1
+          fi
+
+          # Now wait for backend /health to respond
+          echo "Waiting for backend /health..."
           for i in {1..120}; do
             if curl -sSf http://localhost:3000/health >/dev/null 2>&1; then
               echo "backend healthy"
@@ -112,7 +139,9 @@ jobs:
             docker compose -f ./compose.yaml logs backend --no-color --tail 20 || true
             sleep 1
           done
+
           echo "backend did not become healthy" && docker compose -f ./compose.yaml logs backend --no-color --tail 200 || true && exit 1
+
 
       - name: Check JWT_SECRET inside backend container
         shell: bash
