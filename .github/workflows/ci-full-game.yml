@@ -19,8 +19,7 @@ jobs:
         run: |
           cat > .env.dev <<EOF
           JWT_SECRET=${{ secrets.REAL_JWT_SECRET }}
-          BASE_URL=http://localhost:3000
-          GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}
+          BASE_URL=${{ secrets.CI_BASE_URL || 'http://localhost:3000' }}    
           GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}
           EOF
           chmod 600 .env.dev
