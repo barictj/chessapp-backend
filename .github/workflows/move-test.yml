@@ -28,8 +28,8 @@ jobs:
       DB_USER: root
       DB_PASS: rootpass
       DB_NAME: chess_test
-      WHITE_TOKEN: ${{ eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjEsImVtYWlsIjoiYmFyaWN0akBnbWFpbC5jb20iLCJuYW1lIjoiVGhvbWFzIEJhcmljIiwiaWF0IjoxNzY3OTkyOTY4LCJleHAiOjE3Njg1OTc3Njh9.nzQ3pH7mVGS7NGc4uQzj8A8DHsoZ29ZQpPA8jUPp4gs }}
-      BLACK_TOKEN: ${{ eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjIsImVtYWlsIjoiZG90cmVkdWNlQGdtYWlsLmNvbSIsIm5hbWUiOiJUaG9tYXMgQmFyaWMiLCJpYXQiOjE3Njc5OTM4OTMsImV4cCI6MTc2ODU5ODY5M30.HOJUx3GYVKPvaT04vw-CDXurqYsIl4t1BMXyUdwF1Lc }}
+      WHITE_TOKEN: ${{ secrets.CI_WHITE_TOKEN }}
+      BLACK_TOKEN: ${{ secrets.CI_BLACK_TOKEN }}
       GAME_ID: 35
 
     steps:
