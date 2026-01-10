@@ -22,7 +22,6 @@ jobs:
           BASE_URL="${{ secrets.CI_BASE_URL }}"
           JWT_SECRET="${{ secrets.REAL_JWT_SECRET }}"
           GOOGLE_CLIENT_SECRET="${{ secrets.GOOGLE_CLIENT_SECRET }}"
-
           cat > .env.ci <<EOF
           JWT_SECRET=${JWT_SECRET}
           BASE_URL=${BASE_URL:-http://localhost:3000}
@@ -32,7 +31,9 @@ jobs:
           echo ".env.ci created at $(pwd)/.env.ci"
 
       - name: Build and start stack
-        run: docker compose --env-file .env.ci -f compose.yaml up -d --build
+        run: 
+          export BASE_URL="http://localhost:3000"
+          docker compose --env-file .env.ci -f compose.yaml up -d --build
 
       - name: Wait for backend health
         run: |
