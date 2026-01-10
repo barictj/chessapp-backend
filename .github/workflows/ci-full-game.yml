@@ -167,9 +167,13 @@ jobs:
           $playerB = node -e "const jwt=require('jsonwebtoken'); console.log(jwt.sign({ sub:'ci-player-b', email:'ci_b@example.com', provider:'ci' }, process.env.REAL_JWT_SECRET, { algorithm:'HS256', expiresIn:'7d' }));"
           # write token to file for verification (do not print token)
           Set-Content -Path token.txt -Value $playerA -NoNewline
-          # export for subsequent steps
-          echo "PLAYER_A=$playerA" >> $GITHUB_ENV
-          echo "PLAYER_B=$playerB" >> $GITHUB_ENV
+          # export for subsequent steps (use Add-Content on $env:GITHUB_ENV)
+          Add-Content -Path $env:GITHUB_ENV -Value "PLAYER_A=$playerA"
+          Add-Content -Path $env:GITHUB_ENV -Value "PLAYER_B=$playerB"
+      - name: Confirm PLAYER_A exported
+        shell: bash
+        run: |
+          if [ -z "${PLAYER_A:-}" ]; then echo "PLAYER_A not exported"; exit 1; else echo "PLAYER_A exported"; fi
 
       - name: Verify test token inside backend container
         shell: bash
