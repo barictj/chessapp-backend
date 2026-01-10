@@ -2,23 +2,19 @@ version: "3.8"
 
 services:
   backend:
+    env_file:
+      - .env.ci
     build:
       context: .
     image: chess-backend:ci
     ports:
       - "3000:3000"
-    env_file:
-      - .env.ci
     environment:
       ANDROID: "true"
       MYSQL_HOST: db
       MYSQL_USER: root
       MYSQL_PASSWORD: example
       MYSQL_DATABASE: chess
-      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
-      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
-      SESSION_SECRET: ${SESSION_SECRET}
-      JWT_SECRET: ${JWT_SECRET}
       BASE_URL: ${BASE_URL}
     depends_on:
       - db
