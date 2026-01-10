@@ -90,7 +90,26 @@ jobs:
           BASE_URL=http://localhost:3000
           NGROK_AUTHTOKEN=${{ secrets.NGROK_AUTHTOKEN }}
           EOF
+          chmod 600 .env.dev
 
+          # after checkout and creating .env.dev from secrets
+      - name: Build and start stack
+        run: docker compose -f compose.yaml up -d --build
+
+      - name: Wait for backend health
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 60); do
+            if curl -sSf http://localhost:3000/health >/dev/null 2>&1; then
+              echo "backend healthy"; break
+            fi
+            echo "waiting for backend... ($i/60)"; sleep 2
+          done
+
+      - name: Run checks inside backend container
+        run: |
+          docker compose exec -T backend node -e "console.log(require.resolve('jsonwebtoken'))"
+          # docker compose exec -T backend npm test   # run tests inside container
 
       - name: Start stack
         shell: bash

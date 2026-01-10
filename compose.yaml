@@ -2,6 +2,8 @@ version: "3.8"
 
 services:
   backend:
+    volumes:
+      - .:/app:cached
     env_file:
       - .env.ci
     build:
