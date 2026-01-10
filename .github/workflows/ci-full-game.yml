@@ -81,12 +81,16 @@ jobs:
         env:
           REAL_JWT_SECRET: ${{ secrets.REAL_JWT_SECRET }}
         run: |
+          # inside your Create CI env file step
           cat > .env.ci <<EOF
-          JWT_SECRET=${REAL_JWT_SECRET}
+          GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}
+          SESSION_SECRET=${{ secrets.SESSION_SECRET }}
+          JWT_SECRET=${{ secrets.REAL_JWT_SECRET }}
           BASE_URL=http://localhost:3000
+          NGROK_AUTHTOKEN=${{ secrets.NGROK_AUTHTOKEN }}
           EOF
-          chmod 600 .env.ci
-          echo ".env.ci created"
+
 
       - name: Start stack
         shell: bash
