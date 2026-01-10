@@ -2,9 +2,9 @@ name: CI Full Game
 
 on:
   push:
-    branches: [ main ]
+    branches: [ master  ]
   pull_request:
-    branches: [ main ]
+    branches: [ master  ]
   workflow_dispatch:
 
 jobs:
@@ -41,19 +41,20 @@ jobs:
           GOOGLE_CLIENT_SECRET="${{ secrets.GOOGLE_CLIENT_SECRET }}"
 
           cat > .env.ci <<EOF
-JWT_SECRET=${JWT_SECRET}
-BASE_URL=${BASE_URL=http://localhost:3000}
-GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
-DB_HOST=db
-DB_PORT=3306
-DB_USER=chess
-DB_PASSWORD=chesspass
-DB_NAME=chess
-EOF
+          JWT_SECRET=${JWT_SECRET}
+          BASE_URL=${BASE_URL:-http://localhost:3000}
+          GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+          DB_HOST=db
+          DB_PORT=3306
+          DB_USER=chess
+          DB_PASSWORD=chesspass
+          DB_NAME=chess
+          EOF
 
           chmod 600 .env.ci
           echo ".env.ci created"
           grep '^BASE_URL=' .env.ci
+
 
 
 
