@@ -39,11 +39,11 @@ jobs:
           BASE_URL="${{ secrets.CI_BASE_URL }}"
           JWT_SECRET="${{ secrets.REAL_JWT_SECRET }}"
           GOOGLE_CLIENT_SECRET="${{ secrets.GOOGLE_CLIENT_SECRET }}"
-          DB_HOST: db
-          DB_PORT: 3306
-          DB_USER: root
-          DB_PASSWORD: example
-          DB_NAME: chess
+          DB_HOST=db
+          DB_PORT=3306
+          DB_USER=root
+          DB_PASSWORD=example
+          DB_NAME=chess
           echo "BASE_URL (to be written into .env.ci): ${BASE_URL:-http://localhost:3000}"
 
           printf 'JWT_SECRET=%s\nBASE_URL=%s\nGOOGLE_CLIENT_SECRET=%s\nDB_HOST=%s\nDB_PORT=%s\nDB_USER=%s\nDB_PASSWORD=%s\nDB_NAME=%s\n' \
