@@ -71,23 +71,22 @@ const app = express();
   app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 
-  // before creating the Google strategy
+  // Guarded Google OAuth configuration
   const googleClientId = process.env.GOOGLE_CLIENT_ID;
   const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET;
 
   if (!googleClientId || !googleClientSecret) {
     console.warn('Google OAuth not configured: GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET missing. Skipping Google strategy.');
   } else {
-    // existing code that constructs new Strategy({ clientID: googleClientId, clientSecret: googleClientSecret, ... }, verifyFn)
-    passport.use(new GoogleStrategy({
+    configureAuth({
       clientID: googleClientId,
       clientSecret: googleClientSecret,
-      callbackURL: process.env.BASE_URL + '/auth/google/callback',
-      // ...other options
-    }, verifyFn));
+      callbackURL: `${BASE_URL || 'http://localhost:3000'}/auth/google/callback`,
+    });
   }
 
   console.log("STRATEGIES:", passport._strategies);
+
   // Health check
   app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 
