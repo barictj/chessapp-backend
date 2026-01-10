@@ -159,6 +159,10 @@ jobs:
         shell: bash
         run: |
           if [ -f package.json ]; then npm ci; fi
+      
+      - name: Give backend a moment to finish init
+        shell: bash
+        run: sleep 40
 
       - name: Run full game test (generate token file)
         shell: pwsh
