@@ -42,9 +42,8 @@ jobs:
 
           cat > .env.ci <<EOF
 JWT_SECRET=${JWT_SECRET}
-BASE_URL=${BASE_URL:-http://localhost:3000}
+BASE_URL=${BASE_URL=http://localhost:3000}
 GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
-
 DB_HOST=db
 DB_PORT=3306
 DB_USER=chess
@@ -53,10 +52,10 @@ DB_NAME=chess
 EOF
 
           chmod 600 .env.ci
-          export BASE_URL="${BASE_URL:-http://localhost:3000}"
-
-          echo "Created .env.ci"
+          echo ".env.ci created"
           grep '^BASE_URL=' .env.ci
+
+
 
       # ----------------------------------------------------
       # VALIDATE COMPOSE CONFIG
