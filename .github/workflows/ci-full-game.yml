@@ -100,7 +100,7 @@ jobs:
         shell: bash
         run: docker compose --env-file .env.ci -f ./compose.yaml up -d --build
 
-            - name: Wait for DB and backend health
+      - name: Wait for DB and backend health
         shell: bash
         run: |
           set -euo pipefail
