@@ -170,6 +170,7 @@ jobs:
           # export for subsequent steps (use Add-Content on $env:GITHUB_ENV)
           Add-Content -Path $env:GITHUB_ENV -Value "PLAYER_A=$playerA"
           Add-Content -Path $env:GITHUB_ENV -Value "PLAYER_B=$playerB"
+
       - name: Confirm PLAYER_A exported
         shell: bash
         run: |
@@ -188,28 +189,36 @@ jobs:
               catch (err) { console.error('VERIFY_FAIL:', err.message); process.exit(2); }
             \" '$TOKEN'
           "
-      - name: Ensure ci-player-a is set on fixture row
+
+      - name: Ensure CI user exists via app API (preferred)
         shell: bash
         run: |
-          echo "Updating existing fixture to have google_id = 'ci-player-a' and verifying..."
+          TOKEN=$(cat token.txt)
+          echo "Attempting to create/ensure CI user via app API..."
+          # Try app API first (idempotent if implemented)
+          curl -s -i -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
+            -d '{"username":"ci_test_google","email":"ci_test_google@example.com","google_id":"ci-player-a","display_name":"CI Google Test","provider":"google"}' \
+            http://localhost:3000/api/users || true
+
+          echo "Verify via DB; if missing, update fixture directly"
           docker compose exec -T db mysql -uroot -pexample -e "
             USE chess;
-            -- If a row exists with username/email ci_test_google, set its google_id to the token sub
+            SELECT id, username, email, google_id, provider, is_active FROM users WHERE google_id='ci-player-a' LIMIT 1;
+            -- If not present, update existing fixture row to match token sub and ensure active
             UPDATE users
-              SET google_id = 'ci-player-a', updated_at = NOW()
+              SET google_id = 'ci-player-a', is_active = 1, updated_at = NOW()
               WHERE username = 'ci_test_google' OR email = 'ci_test_google@example.com';
-
-            -- If no row matched, insert a new one
             INSERT INTO users (username, email, google_id, display_name, avatar_url, provider, is_active, created_at)
             SELECT 'ci_test_google', 'ci_test_google@example.com', 'ci-player-a', 'CI Google Test', 'https://example.com/avatar-ci.png', 'google', 1, NOW()
             FROM DUAL
             WHERE NOT EXISTS (SELECT 1 FROM users WHERE google_id = 'ci-player-a');
-
-            -- Show the row so we can confirm
             SELECT id, username, email, google_id, provider, is_active FROM users WHERE google_id = 'ci-player-a' LIMIT 1;
           "
 
-
+      - name: Confirm CI user exists
+        shell: bash
+        run: |
+          docker compose exec -T db mysql -uroot -pexample -e "USE chess; SELECT id, username, email, google_id, provider, is_active FROM users WHERE google_id='ci-player-a' LIMIT 1;"
 
       - name: Run full game test
         shell: pwsh
