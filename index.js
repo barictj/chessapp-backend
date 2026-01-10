@@ -148,7 +148,8 @@ const app = express();
 
   // Start server
   const PORT = process.env.PORT || 3000;
-  app.listen(PORT, "0.0.0.0", () => {
+  const host = process.env.HOST || '0.0.0.0';
+  app.listen(port, host, () => {
     console.log(`Backend running on port ${PORT}`);
   });
 })();

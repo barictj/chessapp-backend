@@ -59,19 +59,26 @@ jobs:
 
       - name: Start backend (background)
         run: |
-            # start the app directly in the runner (background)
-            nohup npm start > backend.log 2>&1 &
-            # give the server a moment to bind
-            sleep 2
+          export PORT=3000
+          export HOST=0.0.0.0
+          nohup npm start > backend.log 2>&1 &
+          sleep 1
+          tail -n +1 backend.log || true
+
 
 
       - name: Wait for backend
         run: |
           for i in {1..30}; do
-            curl -sSf http://localhost:3000/health && break
-            echo "Waiting for backend..."
+            if curl -sSf http://127.0.0.1:3000/health; then
+              echo "Backend healthy"
+              break
+            fi
+            echo "Waiting for backend... attempt $i"
+            tail -n 200 backend.log || true
             sleep 2
           done
+
 
       - name: Run move tests
         run: |
