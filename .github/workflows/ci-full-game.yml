@@ -34,11 +34,9 @@ jobs:
 
           echo "BASE_URL (to be written into .env.ci): ${BASE_URL:-http://localhost:3000}"
 
-          cat > .env.ci <<EOF
-JWT_SECRET=${JWT_SECRET}
-BASE_URL=${BASE_URL:-http://localhost:3000}
-GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
-EOF
+          printf 'JWT_SECRET=%s\nBASE_URL=%s\nGOOGLE_CLIENT_SECRET=%s\n' \
+            "$JWT_SECRET" "${BASE_URL:-http://localhost:3000}" "$GOOGLE_CLIENT_SECRET" > .env.ci
+
           chmod 600 .env.ci
           echo ".env.ci created at $(pwd)/.env.ci"
 
