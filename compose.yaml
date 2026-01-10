@@ -1,0 +1,47 @@
+version: "3.8"
+
+services:
+  backend:
+    build:
+      context: .
+    image: chess-backend:ci
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env.ci
+    environment:
+      ANDROID: "true"
+      MYSQL_HOST: db
+      MYSQL_USER: root
+      MYSQL_PASSWORD: example
+      MYSQL_DATABASE: chess
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      SESSION_SECRET: ${SESSION_SECRET}
+      JWT_SECRET: ${JWT_SECRET}
+      BASE_URL: ${BASE_URL}
+    depends_on:
+      - db
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:3000/health || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  db:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: example
+      MYSQL_DATABASE: chess
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: [ "CMD-SHELL", "mysqladmin ping -h localhost -uroot -pexample" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  mysql_data:
