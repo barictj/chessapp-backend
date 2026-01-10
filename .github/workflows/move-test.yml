@@ -54,10 +54,8 @@ jobs:
 
       - name: Run DB migrations and seed test data
         run: |
-          # Example: run your migration/seed scripts here
-          # Replace with your actual migration/seed commands
-          node ./scripts/run-migrations.js --env=test
-          node ./scripts/seed-test-game.js --game-id=${{ env.GAME_ID }}
+          npm run migrate
+          npm run seed:test
 
       - name: Start backend (background)
         run: |
