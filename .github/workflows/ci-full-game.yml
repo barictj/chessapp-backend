@@ -35,10 +35,15 @@ jobs:
           docker compose version
 
       - name: Ensure required secrets exist
+        env:
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+          REAL_JWT_SECRET: ${{ secrets.REAL_JWT_SECRET }}
         run: |
           missing=0
           for s in GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET SESSION_SECRET REAL_JWT_SECRET; do
-            if [ -z "${{ secrets[$s] }}" ]; then
+            if [ -z "${!s}" ]; then
               echo "Missing secret: $s"
               missing=1
             fi
@@ -49,12 +54,17 @@ jobs:
           fi
 
       - name: Create CI env file from secrets
+        env:
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+          REAL_JWT_SECRET: ${{ secrets.REAL_JWT_SECRET }}
         run: |
           cat > .env.ci <<EOF
-          GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}
-          GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}
-          SESSION_SECRET=${{ secrets.SESSION_SECRET }}
-          JWT_SECRET=${{ secrets.REAL_JWT_SECRET }}
+          GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID
+          GOOGLE_CLIENT_SECRET=$GOOGLE_CLIENT_SECRET
+          SESSION_SECRET=$SESSION_SECRET
+          JWT_SECRET=$REAL_JWT_SECRET
           BASE_URL=http://localhost:3000
           EOF
           chmod 600 .env.ci
@@ -100,6 +110,9 @@ jobs:
 
       - name: Run full game test
         shell: pwsh
+        env:
+          BASE_URL: ${{ env.BASE_URL }}
+          REAL_JWT_SECRET: ${{ env.REAL_JWT_SECRET }}
         run: |
           if (-not $env:REAL_JWT_SECRET) { Write-Error "REAL_JWT_SECRET not set"; exit 1 }
           $env:PLAYER_A = node -e "const jwt=require('jsonwebtoken'); console.log(jwt.sign({ sub:'ci-player-a', email:'ci_a@example.com', provider:'ci' }, process.env.REAL_JWT_SECRET, { algorithm:'HS256', expiresIn:'7d' }));"
