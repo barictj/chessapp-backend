@@ -6,6 +6,7 @@ on:
   pull_request:
     branches: [ main ]
   workflow_dispatch:
+
 jobs:
   ci-auth:
     runs-on: ubuntu-latest
@@ -17,17 +18,21 @@ jobs:
       - name: Create CI env file (.env.dev)
         shell: bash
         run: |
+          # set BASE_URL from secret if present, otherwise default
+          BASE_URL="${{ secrets.CI_BASE_URL }}"
+          JWT_SECRET="${{ secrets.REAL_JWT_SECRET }}"
+          GOOGLE_CLIENT_SECRET="${{ secrets.GOOGLE_CLIENT_SECRET }}"
+
           cat > .env.dev <<EOF
-          JWT_SECRET=${{ secrets.REAL_JWT_SECRET }}
-          BASE_URL=${{ secrets.CI_BASE_URL || 'http://localhost:3000' }}    
-          GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}
+          JWT_SECRET=${JWT_SECRET}
+          BASE_URL=${BASE_URL:-http://localhost:3000}
+          GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
           EOF
           chmod 600 .env.dev
-          echo ".env.dev created"
+          echo ".env.dev created at $(pwd)/.env.dev"
 
       - name: Build and start stack
-        run: |
-          docker compose -f compose.yaml up -d --build
+        run: docker compose -f compose.yaml up -d --build
 
       - name: Wait for backend health
         run: |
@@ -42,20 +47,23 @@ jobs:
 
       - name: Generate JWT inside backend container
         id: gen_token
+        shell: bash
         run: |
           set -euo pipefail
-          # Generate a short-lived token inside the container using the same JWT_SECRET the app uses
-          TOKEN=$(docker compose exec -T backend sh -lc 'node -e "const jwt=require(\"jsonwebtoken\"); console.log(jwt.sign({sub:\"ci-user\",role:\"ci\"}, process.env.JWT_SECRET,{expiresIn:\"1h\"}))"')
+          # generate token inside container and trim newline characters
+          RAW_TOKEN=$(docker compose exec -T backend sh -lc 'node -e "const jwt=require(\"jsonwebtoken\"); console.log(jwt.sign({sub:\"ci-user\",role:\"ci\"}, process.env.JWT_SECRET,{expiresIn:\"1h\"}))"')
+          TOKEN=$(echo -n "$RAW_TOKEN" | tr -d '\r\n')
           echo "token length: ${#TOKEN}"
-          # expose token to later steps
-          echo "AUTH_TOKEN=${TOKEN}" >> $GITHUB_OUTPUT
+          echo "AUTH_TOKEN=$TOKEN" >> $GITHUB_OUTPUT
 
       - name: Call protected endpoint with token
+        shell: bash
         run: |
           set -euo pipefail
           echo "Using token to call protected endpoint"
-          # Replace /api/protected with your actual protected route (e.g., /auth/me or /users/me)
-          HTTP_STATUS=$(curl -s -o /tmp/auth_resp.json -w "%{http_code}" -H "Authorization: Bearer ${{ steps.gen_token.outputs.AUTH_TOKEN }}" http://localhost:3000/api/protected || true)
+          TOKEN="${{ steps.gen_token.outputs.AUTH_TOKEN }}"
+          # replace /api/protected with your actual protected route
+          HTTP_STATUS=$(curl -s -o /tmp/auth_resp.json -w "%{http_code}" -H "Authorization: Bearer $TOKEN" http://localhost:3000/api/protected || true)
           echo "HTTP status: $HTTP_STATUS"
           echo "Response body:"
           cat /tmp/auth_resp.json || true
