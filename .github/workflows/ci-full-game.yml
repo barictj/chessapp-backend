@@ -23,26 +23,22 @@ jobs:
           docker compose version || true
           which docker-compose || true
 
-      - name: Install Docker Compose plugin
+      # start the stack using the explicit repo-root compose file
+      - name: Start backend (explicit compose file)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y curl
-          DOCKER_CONFIG=${DOCKER_CONFIG:-$HOME/.docker}
-          mkdir -p $DOCKER_CONFIG/cli-plugins
-          curl -SL "https://github.com/docker/compose/releases/download/v2.20.2/docker-compose-linux-x86_64" -o $DOCKER_CONFIG/cli-plugins/docker-compose
-          chmod +x $DOCKER_CONFIG/cli-plugins/docker-compose
-          docker compose version
+          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
+          echo "Checking for compose file at $GITHUB_WORKSPACE/compose.yaml"
+          if [ -f "$GITHUB_WORKSPACE/compose.yaml" ]; then
+            echo "Found compose file"
+            sed -n '1,200p' "$GITHUB_WORKSPACE/compose.yaml"
+            docker compose -f "$GITHUB_WORKSPACE/compose.yaml" up -d --build
+          else
+            echo "ERROR: compose file not found at $GITHUB_WORKSPACE/compose.yaml"
+            ls -la "$GITHUB_WORKSPACE"
+            exit 14
+          fi
 
-      - name: List repo files (debug)
-        run: |
-          echo "PWD: $(pwd)"
-          ls -la
-          echo "Root compose file:"
-          if [ -f docker-compose.yml ]; then echo "FOUND docker-compose.yml"; sed -n '1,120p' docker-compose.yml; else echo "no docker-compose.yml at repo root"; fi
-
-      - name: Start backend (compose at repo root)
-        run: docker compose up -d --build
-
+      # wait for health
       - name: Wait for backend health
         run: |
           for i in {1..120}; do
@@ -54,6 +50,16 @@ jobs:
             sleep 1
           done
           echo "backend did not become healthy" && exit 1
+
+      # collect logs using the same explicit file
+      - name: Collect docker logs on failure
+        if: failure()
+        run: |
+          echo "=== docker compose ps ==="
+          docker compose -f "$GITHUB_WORKSPACE/compose.yaml" ps || true
+          echo "=== backend logs ==="
+          docker compose -f "$GITHUB_WORKSPACE/compose.yaml" logs backend --no-color --tail 500 || true
+
 
       - name: Show compose config
         run: docker compose config || true
