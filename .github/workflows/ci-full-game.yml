@@ -1,4 +1,4 @@
-name: CI Authenticate
+name: CI Authenticate Verbose
 
 on:
   push:
@@ -10,18 +10,33 @@ on:
 jobs:
   ci-auth:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Create CI env file (.env.ci)
+      - name: Show runner info
         shell: bash
         run: |
-          # set BASE_URL from secret if present, otherwise default
+          echo "=== Runner info ==="
+          uname -a || true
+          echo "Working directory: $(pwd)"
+          echo "List files:"
+          ls -la
+
+      - name: Create CI env file (.env.ci) and log BASE_URL
+        shell: bash
+        run: |
+          echo "=== Creating .env.ci from secrets (will NOT print secret values) ==="
+          # populate variables from secrets (defaults where appropriate)
           BASE_URL="${{ secrets.CI_BASE_URL }}"
           JWT_SECRET="${{ secrets.REAL_JWT_SECRET }}"
           GOOGLE_CLIENT_SECRET="${{ secrets.GOOGLE_CLIENT_SECRET }}"
+
+          # Log the BASE_URL explicitly (it's not a secret)
+          echo "BASE_URL (to be written into .env.ci): ${BASE_URL:-http://localhost:3000}"
+
+          # Create the env file with no leading spaces in heredoc
           cat > .env.ci <<EOF
           JWT_SECRET=${JWT_SECRET}
           BASE_URL=${BASE_URL:-http://localhost:3000}
@@ -30,52 +45,133 @@ jobs:
           chmod 600 .env.ci
           echo ".env.ci created at $(pwd)/.env.ci"
 
-      - name: Build and start stack
-        run: 
-          export BASE_URL="http://localhost:3000"
-          docker compose --env-file .env.ci -f compose.yaml up -d --build
+          # Confirm presence of secrets without printing them
+          if [ -n "${JWT_SECRET}" ]; then echo "JWT_SECRET is set (value hidden)"; else echo "JWT_SECRET is NOT set"; fi
+          if [ -n "${GOOGLE_CLIENT_SECRET}" ]; then echo "GOOGLE_CLIENT_SECRET is set (value hidden)"; else echo "GOOGLE_CLIENT_SECRET is NOT set"; fi
 
-      - name: Wait for backend health
+          echo "Preview .env.ci (non-secret keys only):"
+          # show only the BASE_URL line from the file to avoid leaking secrets
+          grep '^BASE_URL=' .env.ci || true
+
+      - name: Show resolved docker compose config and env substitution
+        shell: bash
+        run: |
+          echo "=== docker compose config (resolved) preview ==="
+          docker compose --env-file .env.ci -f compose.yaml config || true
+
+      - name: Build and start stack
+        shell: bash
+        run: |
+          echo "=== Starting docker compose stack using .env.ci ==="
+          docker compose --env-file .env.ci -f compose.yaml up -d --build
+          echo "docker compose up returned with exit code $?"
+
+      - name: Show compose ps and ports
+        shell: bash
+        run: |
+          echo "=== docker compose ps (services and ports) ==="
+          docker compose --env-file .env.ci -f compose.yaml ps || true
+          echo "=== docker container ls (recent) ==="
+          docker ps --format "table {{.ID}}\t{{.Image}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}" || true
+
+      - name: Wait for backend health with verbose logging
+        shell: bash
         run: |
           set -euo pipefail
-          for i in $(seq 1 60); do
-            if curl -sSf http://localhost:3000/health >/dev/null 2>&1; then
-              echo "backend healthy"; break
+          echo "=== Waiting for backend health at ${BASE_URL:-http://localhost:3000}/health ==="
+          for i in $(seq 1 120); do
+            echo "wait iteration $i/120: curling http://localhost:3000/health ..."
+            HTTP_STATUS=$(curl -s -o /tmp/health_resp.txt -w "%{http_code}" http://localhost:3000/health || true)
+            echo "HTTP status: $HTTP_STATUS"
+            if [ "$HTTP_STATUS" = "200" ]; then
+              echo "backend healthy at attempt $i"
+              echo "health response:"
+              sed -n '1,200p' /tmp/health_resp.txt || true
+              exit 0
             fi
-            echo "waiting for backend... ($i/60)"; sleep 2
+            echo "not healthy yet; tail backend logs (last 50 lines):"
+            docker compose --env-file .env.ci -f compose.yaml logs backend --tail 50 || true
+            sleep 2
           done
-          curl -sS http://localhost:3000/health || true
+          echo "backend did not become healthy within timeout"
+          echo "final backend logs (tail 500):"
+          docker compose --env-file .env.ci -f compose.yaml logs backend --tail 500 || true
+          exit 1
+
+      - name: Debug container state (post-health)
+        if: success()
+        shell: bash
+        run: |
+          echo "=== Post-health container state ==="
+          docker compose --env-file .env.ci -f compose.yaml ps -a || true
+          CONTAINER=$(docker compose --env-file .env.ci -f compose.yaml ps -q backend || true)
+          echo "backend container id: $CONTAINER"
+          if [ -n "$CONTAINER" ]; then
+            echo "Inspecting container state:"
+            docker inspect --format '{{json .State}}' "$CONTAINER" || docker inspect "$CONTAINER" || true
+            echo "Health details (if any):"
+            docker inspect --format '{{json .State.Health}}' "$CONTAINER" || true
+            echo "Environment inside container (only BASE_URL presence shown):"
+            docker compose --env-file .env.ci -f compose.yaml exec -T backend sh -lc 'env | egrep "BASE_URL" || echo "BASE_URL not set inside container"' || true
+            echo "Confirm JWT_SECRET is present inside container (value hidden):"
+            docker compose --env-file .env.ci -f compose.yaml exec -T backend sh -lc 'if [ -n "$JWT_SECRET" ]; then echo "JWT_SECRET set inside container (hidden)"; else echo "JWT_SECRET NOT set inside container"; fi' || true
+          fi
 
       - name: Generate JWT inside backend container
         id: gen_token
         shell: bash
         run: |
           set -euo pipefail
-          # generate token inside container and trim newline characters
-          RAW_TOKEN=$(docker compose exec -T backend sh -lc 'node -e "const jwt=require(\"jsonwebtoken\"); console.log(jwt.sign({sub:\"ci-user\",role:\"ci\"}, process.env.JWT_SECRET,{expiresIn:\"1h\"}))"')
+          echo "=== Generating JWT inside backend container (uses container env) ==="
+          RAW_TOKEN=$(docker compose --env-file .env.ci -f compose.yaml exec -T backend sh -lc 'node -e "const jwt=require(\"jsonwebtoken\"); console.log(jwt.sign({sub:\"ci-user\",role:\"ci\"}, process.env.JWT_SECRET,{expiresIn:\"1h\"}))"')
           TOKEN=$(echo -n "$RAW_TOKEN" | tr -d '\r\n')
-          echo "token length: ${#TOKEN}"
+          echo "Generated token length: ${#TOKEN}"
+          # expose token to later steps without printing it
           echo "AUTH_TOKEN=$TOKEN" >> $GITHUB_OUTPUT
 
       - name: Call protected endpoint with token
         shell: bash
         run: |
           set -euo pipefail
-          echo "Using token to call protected endpoint"
+          echo "=== Calling protected endpoint with generated token (token not printed) ==="
           TOKEN="${{ steps.gen_token.outputs.AUTH_TOKEN }}"
+          echo "Using BASE_URL: $(grep '^BASE_URL=' .env.ci | cut -d'=' -f2-)"
           # replace /api/protected with your actual protected route
-          HTTP_STATUS=$(curl -s -o /tmp/auth_resp.json -w "%{http_code}" -H "Authorization: Bearer $TOKEN" http://localhost:3000/api/protected || true)
+          PROTECTED_PATH="/api/protected"
+          echo "Calling http://localhost:3000${PROTECTED_PATH}"
+          HTTP_STATUS=$(curl -s -o /tmp/auth_resp.json -w "%{http_code}" -H "Authorization: Bearer $TOKEN" http://localhost:3000${PROTECTED_PATH} || true)
           echo "HTTP status: $HTTP_STATUS"
           echo "Response body:"
-          cat /tmp/auth_resp.json || true
+          sed -n '1,200p' /tmp/auth_resp.json || true
           if [ "$HTTP_STATUS" != "200" ]; then
             echo "Authentication check failed (status $HTTP_STATUS)"
             exit 1
           fi
           echo "Authentication succeeded"
 
+      - name: Dump logs to files for artifact (on failure)
+        if: failure()
+        shell: bash
+        run: |
+          echo "=== Dumping logs to files for upload ==="
+          docker compose --env-file .env.ci -f compose.yaml logs backend --tail 500 > backend-logs.txt || true
+          docker compose --env-file .env.ci -f compose.yaml logs db --tail 500 > db-logs.txt || true
+          echo "Wrote backend-logs.txt and db-logs.txt"
+
+      - name: Upload logs artifact (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-logs
+          path: |
+            backend-logs.txt
+            db-logs.txt
+
       - name: Tear down stack
         if: always()
+        shell: bash
         run: |
-          docker compose -f compose.yaml down -v
+          echo "=== Tearing down stack and cleaning up ==="
+          docker compose --env-file .env.ci -f compose.yaml down -v || true
           rm -f .env.ci || true
+          echo "Cleanup complete"
