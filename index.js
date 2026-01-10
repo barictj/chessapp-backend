@@ -25,8 +25,7 @@ export const pool = mysql.createPool({
   waitForConnections: true,
   connectionLimit: 10,
 });
-// add a short /health route for CI
-app.get('/health', (req, res) => res.json({ status: 'ok' }));
+
 
 
 // Environment variables
@@ -68,7 +67,8 @@ const app = express();
   app.use(cors({ origin: '*', credentials: true }));
   app.use(express.json());
   app.use(passport.initialize());
-
+  // add a short /health route for CI
+  app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 
   // Configure Google OAuth strategy

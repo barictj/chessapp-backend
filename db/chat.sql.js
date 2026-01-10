@@ -1,11 +1,12 @@
+// db/chat.sql.js
 export const chatTable = `
 CREATE TABLE IF NOT EXISTS chat (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  game_id BIGINT UNSIGNED NOT NULL,
+  game_id INT NOT NULL,
   sender_id BIGINT UNSIGNED NOT NULL,
   message TEXT NOT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT fk_chat_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE RESTRICT,
   CONSTRAINT fk_chat_sender FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE RESTRICT
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 `;
