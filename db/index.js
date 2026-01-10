@@ -1,7 +1,7 @@
 // chess/backend/db/index.js
 import { pool } from '../index.js';
 
-import { usersTable } from './users.sql.js';
+import { usersTable, usersSeed } from './users.sql.js';
 import { botsTable } from './bots.sql.js';
 import { gamesTable } from './games.sql.js';
 import { movesTable } from './moves.sql.js';
@@ -26,6 +26,7 @@ export async function initSchema() {
         uservsuserstatsTable,
         notificationsTable,
         leaderboardsTable,
+        usersSeed
     ];
 
     for (const sql of tables) {

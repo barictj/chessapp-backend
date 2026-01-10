@@ -1,0 +1,46 @@
+name: CI Full Game Test
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  full-game:
+    runs-on: ubuntu-latest
+    env:
+      BASE_URL: http://localhost:3000
+      REAL_JWT_SECRET: ${{ secrets.REAL_JWT_SECRET }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Start backend (example)
+        run: |
+          # start your test backend here; replace with your start command
+          docker-compose up -d --build
+          # wait for health
+          ./scripts/wait-for-health.sh http://localhost:3000/health 60
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run full game test
+        shell: pwsh
+        run: |
+          # generate tokens and run the test script in the same shell
+          $env:REAL_JWT_SECRET = '${{ secrets.REAL_JWT_SECRET }}'
+          $env:PLAYER_A = node -e "const jwt=require('jsonwebtoken'); console.log(jwt.sign({ sub:'3', email:'ci_test_google@example.com', provider:'google' }, process.env.REAL_JWT_SECRET, { algorithm:'HS256', expiresIn:'7d' }));"
+          $env:PLAYER_B = node -e "const jwt=require('jsonwebtoken'); console.log(jwt.sign({ sub:'7', email:'ci_test_google_b@example.com', provider:'google' }, process.env.REAL_JWT_SECRET, { algorithm:'HS256', expiresIn:'7d' }));"
+          pwsh ./tests/Test-FullGame.ps1
+        continue-on-error: false
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-full-game-logs
+          path: |
+            tests/logs/**
+            docker-compose.yml
