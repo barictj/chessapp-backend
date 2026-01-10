@@ -1,8 +1,9 @@
+// db/matchhistory.sql.js
 export const matchhistoryTable = `
 CREATE TABLE IF NOT EXISTS matchhistory (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   user_id BIGINT UNSIGNED NOT NULL,
-  game_id INT NOT NULL,
+  game_id BIGINT UNSIGNED NOT NULL,
   result ENUM('win','loss','draw','abandoned') NOT NULL,
   opponent_id BIGINT UNSIGNED,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
