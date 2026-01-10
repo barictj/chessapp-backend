@@ -1,4 +1,4 @@
-name: CI Authenticate Verbose
+name: CI Full Game
 
 on:
   push:
@@ -8,35 +8,32 @@ on:
   workflow_dispatch:
 
 jobs:
-  ci-auth:
+  ci-full-game:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Show runner info
+      - name: Runner info
         shell: bash
         run: |
           echo "=== Runner info ==="
           uname -a || true
           echo "Working directory: $(pwd)"
-          echo "List files:"
+          echo "Files:"
           ls -la
 
       - name: Create CI env file (.env.ci) and log BASE_URL
         shell: bash
         run: |
           echo "=== Creating .env.ci from secrets (will NOT print secret values) ==="
-          # populate variables from secrets (defaults where appropriate)
           BASE_URL="${{ secrets.CI_BASE_URL }}"
           JWT_SECRET="${{ secrets.REAL_JWT_SECRET }}"
           GOOGLE_CLIENT_SECRET="${{ secrets.GOOGLE_CLIENT_SECRET }}"
 
-          # Log the BASE_URL explicitly (it's not a secret)
           echo "BASE_URL (to be written into .env.ci): ${BASE_URL:-http://localhost:3000}"
 
-          # Create the env file with no leading spaces in heredoc
           cat > .env.ci <<EOF
           JWT_SECRET=${JWT_SECRET}
           BASE_URL=${BASE_URL:-http://localhost:3000}
@@ -45,25 +42,26 @@ jobs:
           chmod 600 .env.ci
           echo ".env.ci created at $(pwd)/.env.ci"
 
-          # Confirm presence of secrets without printing them
           if [ -n "${JWT_SECRET}" ]; then echo "JWT_SECRET is set (value hidden)"; else echo "JWT_SECRET is NOT set"; fi
           if [ -n "${GOOGLE_CLIENT_SECRET}" ]; then echo "GOOGLE_CLIENT_SECRET is set (value hidden)"; else echo "GOOGLE_CLIENT_SECRET is NOT set"; fi
 
           echo "Preview .env.ci (non-secret keys only):"
-          # show only the BASE_URL line from the file to avoid leaking secrets
           grep '^BASE_URL=' .env.ci || true
 
-      - name: Show resolved docker compose config and env substitution
+      - name: Show resolved docker compose config
         shell: bash
         run: |
           echo "=== docker compose config (resolved) preview ==="
           docker compose --env-file .env.ci -f compose.yaml config || true
+          docker ps --filter name=backend --format "table {{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}"
 
-      - name: Build and start stack
+      - name: Build backend image (no cache) and start stack
         shell: bash
         run: |
+          echo "=== Building backend image with --no-cache ==="
+          docker compose --env-file .env.ci -f compose.yaml build --no-cache backend || true
           echo "=== Starting docker compose stack using .env.ci ==="
-          docker compose --env-file .env.ci -f compose.yaml up -d --build
+          docker compose --env-file .env.ci -f compose.yaml up -d --force-recreate --build
           echo "docker compose up returned with exit code $?"
 
       - name: Show compose ps and ports
@@ -115,6 +113,8 @@ jobs:
             docker compose --env-file .env.ci -f compose.yaml exec -T backend sh -lc 'env | egrep "BASE_URL" || echo "BASE_URL not set inside container"' || true
             echo "Confirm JWT_SECRET is present inside container (value hidden):"
             docker compose --env-file .env.ci -f compose.yaml exec -T backend sh -lc 'if [ -n "$JWT_SECRET" ]; then echo "JWT_SECRET set inside container (hidden)"; else echo "JWT_SECRET NOT set inside container"; fi' || true
+            echo "List /app and node_modules:"
+            docker compose --env-file .env.ci -f compose.yaml exec -T backend sh -lc 'pwd; ls -la /app || true; ls -la /app/node_modules || true' || true
           fi
 
       - name: Generate JWT inside backend container
@@ -126,7 +126,6 @@ jobs:
           RAW_TOKEN=$(docker compose --env-file .env.ci -f compose.yaml exec -T backend sh -lc 'node -e "const jwt=require(\"jsonwebtoken\"); console.log(jwt.sign({sub:\"ci-user\",role:\"ci\"}, process.env.JWT_SECRET,{expiresIn:\"1h\"}))"')
           TOKEN=$(echo -n "$RAW_TOKEN" | tr -d '\r\n')
           echo "Generated token length: ${#TOKEN}"
-          # expose token to later steps without printing it
           echo "AUTH_TOKEN=$TOKEN" >> $GITHUB_OUTPUT
 
       - name: Call protected endpoint with token
@@ -136,7 +135,6 @@ jobs:
           echo "=== Calling protected endpoint with generated token (token not printed) ==="
           TOKEN="${{ steps.gen_token.outputs.AUTH_TOKEN }}"
           echo "Using BASE_URL: $(grep '^BASE_URL=' .env.ci | cut -d'=' -f2-)"
-          # replace /api/protected with your actual protected route
           PROTECTED_PATH="/api/protected"
           echo "Calling http://localhost:3000${PROTECTED_PATH}"
           HTTP_STATUS=$(curl -s -o /tmp/auth_resp.json -w "%{http_code}" -H "Authorization: Bearer $TOKEN" http://localhost:3000${PROTECTED_PATH} || true)

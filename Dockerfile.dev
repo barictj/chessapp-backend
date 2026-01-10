@@ -1,16 +1,17 @@
-FROM node:18-bullseye
+# Dockerfile
+FROM node:18-alpine
 
+# Create app directory
 WORKDIR /app
 
-# Copy package files first so layer caching works
+# Copy package manifests first and install dependencies
 COPY package*.json ./
+RUN npm ci --production
 
-# Use npm ci for deterministic installs; install production deps in CI/production
-RUN npm ci --production --no-audit --no-fund
-
-# Copy source
+# Copy app source
 COPY . .
 
+# Ensure the app listens on 0.0.0.0 (your app should do this too)
 ENV NODE_ENV=production
 EXPOSE 3000
 
