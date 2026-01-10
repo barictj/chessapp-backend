@@ -16,14 +16,18 @@ import statsRoutes from './src/routes/stats.js';
 import authRoutes from './src/routes/auth.js';
 
 // Create MySQL pool (shared across app)
+// use either MYSQL_* or DB_* env names; fall back to sensible defaults
 export const pool = mysql.createPool({
-  host: process.env.MYSQL_HOST,
-  user: process.env.MYSQL_USER,
-  password: process.env.MYSQL_PASSWORD,
-  database: process.env.MYSQL_DATABASE,
+  host: process.env.MYSQL_HOST || process.env.DB_HOST || '127.0.0.1',
+  user: process.env.MYSQL_USER || process.env.DB_USER || 'root',
+  password: process.env.MYSQL_PASSWORD || process.env.DB_PASS || process.env.DB_PASS || '',
+  database: process.env.MYSQL_DATABASE || process.env.DB_NAME || 'chess_test',
   waitForConnections: true,
   connectionLimit: 10,
 });
+// add a short /health route for CI
+app.get('/health', (req, res) => res.json({ status: 'ok' }));
+
 
 // Environment variables
 const {
@@ -146,10 +150,25 @@ const app = express();
   app.use('/api/stats', statsRoutes);
   app.use('/api/auth', authRoutes);
 
-  // Start server
-  const PORT = process.env.PORT || 3000;
+  // index.js (or your server entry)
+  const port = Number(process.env.PORT || 3000);
   const host = process.env.HOST || '0.0.0.0';
-  app.listen(port, host, () => {
-    console.log(`Backend running on port ${PORT}`);
+
+  const server = app.listen(port, host, () => {
+    console.log(`Backend listening on http://${host}:${port}`);
   });
+
+  server.on('error', err => {
+    console.error('Server failed to start', err);
+    process.exit(1);
+  });
+
+  process.on('unhandledRejection', err => {
+    console.error('Unhandled promise rejection', err);
+  });
+  process.on('uncaughtException', err => {
+    console.error('Uncaught exception', err);
+    process.exit(1);
+  });
+
 })();

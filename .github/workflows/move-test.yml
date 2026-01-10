@@ -64,9 +64,6 @@ jobs:
           nohup npm start > backend.log 2>&1 &
           sleep 1
           tail -n +1 backend.log || true
-
-
-
       - name: Wait for backend
         run: |
           for i in {1..30}; do
@@ -78,8 +75,9 @@ jobs:
             tail -n 200 backend.log || true
             sleep 2
           done
-
-
+      - name: Verify DB schema
+        run: |
+          mysql -h127.0.0.1 -uroot -prootpass -D chess_test -e "SHOW TABLES; SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='chess_test' AND table_name IN ('games','moves');"
       - name: Run move tests
         run: |
           node ./tests/move-tests.js
