@@ -105,7 +105,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Wait for DB container to report healthy via Docker healthcheck
           echo "Waiting for db container to become healthy..."
           DB_CONTAINER=$(docker compose -f ./compose.yaml ps -q db)
           if [ -z "$DB_CONTAINER" ]; then
@@ -128,7 +127,6 @@ jobs:
             exit 1
           fi
 
-          # Now wait for backend /health to respond
           echo "Waiting for backend /health..."
           for i in {1..120}; do
             if curl -sSf http://localhost:3000/health >/dev/null 2>&1; then
@@ -141,7 +139,6 @@ jobs:
           done
 
           echo "backend did not become healthy" && docker compose -f ./compose.yaml logs backend --no-color --tail 200 || true && exit 1
-
 
       - name: Check JWT_SECRET inside backend container
         shell: bash
@@ -159,68 +156,20 @@ jobs:
         shell: bash
         run: |
           if [ -f package.json ]; then npm ci; fi
-      
-      - name: Wait for DB and backend /health
-        shell: bash
-        run: |
-          set -euo pipefail
 
-          echo "Waiting for db container to become healthy..."
-          DB_CONTAINER=$(docker compose -f ./compose.yaml ps -q db)
-          if [ -z "$DB_CONTAINER" ]; then
-            echo "DB container not found; listing containers:" && docker compose -f ./compose.yaml ps
-            exit 1
-          fi
-
-          # wait up to 120s for DB health
-          for i in {1..60}; do
-            STATUS=$(docker inspect --format='{{.State.Health.Status}}' "$DB_CONTAINER" 2>/dev/null || echo "no-health")
-            echo "db health status: $STATUS (attempt $i/60)"
-            if [ "$STATUS" = "healthy" ]; then
-              echo "db healthy"
-              break
-            fi
-            sleep 2
-          done
-
-          if [ "$STATUS" != "healthy" ]; then
-            echo "DB did not become healthy in time" && docker compose -f ./compose.yaml logs db --no-color --tail 200 || true
-            exit 1
-          fi
-
-          echo "Waiting for backend /health..."
-          for i in {1..120}; do
-            if curl -sSf http://localhost:3000/health >/dev/null 2>&1; then
-              echo "backend healthy"
-              exit 0
-            fi
-            echo "waiting for backend... ($i)"
-            docker compose -f ./compose.yaml logs backend --no-color --tail 20 || true
-            sleep 1
-          done
-
-          echo "backend did not become healthy" && docker compose -f ./compose.yaml logs backend --no-color --tail 200 || true && exit 1
-
-
-      - name: Run full game test (generate token file)
+      - name: Generate test token (pwsh)
         shell: pwsh
         env:
-          BASE_URL: ${{ env.BASE_URL }}
           REAL_JWT_SECRET: ${{ env.REAL_JWT_SECRET }}
         run: |
           if (-not $env:REAL_JWT_SECRET) { Write-Error "REAL_JWT_SECRET not set"; exit 1 }
           $playerA = node -e "const jwt=require('jsonwebtoken'); console.log(jwt.sign({ sub:'ci-player-a', email:'ci_a@example.com', provider:'ci' }, process.env.REAL_JWT_SECRET, { algorithm:'HS256', expiresIn:'7d' }));"
           $playerB = node -e "const jwt=require('jsonwebtoken'); console.log(jwt.sign({ sub:'ci-player-b', email:'ci_b@example.com', provider:'ci' }, process.env.REAL_JWT_SECRET, { algorithm:'HS256', expiresIn:'7d' }));"
+          # write token to file for verification (do not print token)
           Set-Content -Path token.txt -Value $playerA -NoNewline
-          $env:PLAYER_A = $playerA
-          $env:PLAYER_B = $playerB
-          try {
-            Invoke-RestMethod -Uri "$env:BASE_URL/api/auth/me" -Headers @{ Authorization = "Bearer $env:PLAYER_A" } -Method Get -TimeoutSec 10 | Out-Null
-          } catch {
-            Write-Error "Preflight auth/me failed for PLAYER_A"
-            exit 1
-          }
-          pwsh ./tests/Test-FullGame.ps1
+          # export for subsequent steps
+          echo "PLAYER_A=$playerA" >> $GITHUB_ENV
+          echo "PLAYER_B=$playerB" >> $GITHUB_ENV
 
       - name: Verify test token inside backend container
         shell: bash
@@ -235,6 +184,22 @@ jobs:
               catch (err) { console.error('VERIFY_FAIL:', err.message); process.exit(2); }
             \" '$TOKEN'
           "
+
+      - name: Run full game test
+        shell: pwsh
+        env:
+          BASE_URL: ${{ env.BASE_URL }}
+          PLAYER_A: ${{ env.PLAYER_A }}
+          PLAYER_B: ${{ env.PLAYER_B }}
+        run: |
+          if (-not $env:PLAYER_A) { Write-Error "PLAYER_A not set"; exit 1 }
+          try {
+            Invoke-RestMethod -Uri "$env:BASE_URL/api/auth/me" -Headers @{ Authorization = "Bearer $env:PLAYER_A" } -Method Get -TimeoutSec 10 | Out-Null
+          } catch {
+            Write-Error "Preflight auth/me failed for PLAYER_A"
+            exit 1
+          }
+          pwsh ./tests/Test-FullGame.ps1
 
       - name: Collect docker logs on failure
         if: failure()
