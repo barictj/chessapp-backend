@@ -1,0 +1,17 @@
+FROM node:18-bullseye
+
+WORKDIR /app
+
+# Copy package files first so layer caching works
+COPY package*.json ./
+
+# Use npm ci for deterministic installs; install production deps in CI/production
+RUN npm ci --production --no-audit --no-fund
+
+# Copy source
+COPY . .
+
+ENV NODE_ENV=production
+EXPOSE 3000
+
+CMD ["node", "index.js"]

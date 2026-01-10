@@ -6,6 +6,7 @@ services:
       - .env.ci
     build:
       context: .
+      dockerfile: Dockerfile.dev
     image: chess-backend:ci
     ports:
       - "3000:3000"
