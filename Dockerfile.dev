@@ -1,7 +1,6 @@
 # Dockerfile
 FROM node:18-alpine
 
-# Create app directory
 WORKDIR /app
 
 # Copy package manifests first and install dependencies
@@ -11,7 +10,6 @@ RUN npm ci --production
 # Copy app source
 COPY . .
 
-# Ensure the app listens on 0.0.0.0 (your app should do this too)
 ENV NODE_ENV=production
 EXPOSE 3000
 
