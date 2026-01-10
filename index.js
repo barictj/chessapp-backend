@@ -6,6 +6,7 @@ import mysql from 'mysql2/promise';
 
 import { requireAuth, configureAuth } from './auth.js';
 import { initSchema } from './db/index.js';
+
 // Route imports
 import gamesRoutes from './src/routes/games.js';
 import movesRoutes from './src/routes/moves.js';
@@ -15,169 +16,195 @@ import notificationsRoutes from './src/routes/notifications.js';
 import statsRoutes from './src/routes/stats.js';
 import authRoutes from './src/routes/auth.js';
 
-// Create MySQL pool (shared across app)
-// use either MYSQL_* or DB_* env names; fall back to sensible defaults
+/* -------------------------
+   GLOBAL READINESS FLAG
+------------------------- */
+global.dbReady = false;
+
+/* -------------------------
+   MYSQL POOL
+------------------------- */
 export const pool = mysql.createPool({
   host: process.env.MYSQL_HOST || process.env.DB_HOST || '127.0.0.1',
   user: process.env.MYSQL_USER || process.env.DB_USER || 'root',
-  password: process.env.MYSQL_PASSWORD || process.env.DB_PASS || process.env.DB_PASS || '',
-  database: process.env.MYSQL_DATABASE || process.env.DB_NAME || 'chess_test',
+  password:
+    process.env.MYSQL_PASSWORD ||
+    process.env.DB_PASSWORD ||
+    '',
+  database:
+    process.env.MYSQL_DATABASE ||
+    process.env.DB_NAME ||
+    'chess_test',
   waitForConnections: true,
   connectionLimit: 10,
 });
 
-
-
-// Environment variables
-const {
-  GOOGLE_CLIENT_ID,
-  GOOGLE_CLIENT_SECRET,
-  JWT_SECRET,
-  BASE_URL,
-} = process.env;
+/* -------------------------
+   DB WAIT LOOP
+------------------------- */
 async function waitForDB() {
   const maxRetries = 150;
   const delay = ms => new Promise(res => setTimeout(res, ms));
 
   for (let i = 0; i < maxRetries; i++) {
     try {
-      await pool.query("SELECT 1");
-      console.log("Database is ready.");
+      await pool.query('SELECT 1');
+      console.log('Database is ready.');
       return;
-    } catch (err) {
+    } catch {
       console.log(`DB not ready yet (${i + 1}/${maxRetries})...`);
       await delay(1000);
     }
   }
 
-  throw new Error("Database did not become ready in time.");
+  throw new Error('Database did not become ready in time.');
 }
 
-// Create express app
+/* -------------------------
+   EXPRESS APP
+------------------------- */
 const app = express();
 
-// -------------------------
-// ASYNC STARTUP WRAPPER
-// -------------------------
-(async () => {
-  // Initialize DB before anything else
-  await waitForDB();
-  await initSchema();
-  // Middleware
-  app.use(cors({ origin: '*', credentials: true }));
-  app.use(express.json());
-  app.use(passport.initialize());
-  // add a short /health route for CI
-  app.get('/health', (req, res) => res.json({ status: 'ok' }));
+app.use(cors({ origin: '*', credentials: true }));
+app.use(express.json());
+app.use(passport.initialize());
 
+/* -------------------------
+   HEALTH ENDPOINT (CRITICAL)
+------------------------- */
+app.get('/health', (req, res) => {
+  if (!global.dbReady) {
+    return res.status(503).json({ status: 'starting' });
+  }
+  res.json({ status: 'ok' });
+});
 
-  // Guarded Google OAuth configuration
-  const googleClientId = process.env.GOOGLE_CLIENT_ID;
-  const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET;
+/* -------------------------
+   AUTH CONFIG
+------------------------- */
+const {
+  GOOGLE_CLIENT_ID,
+  GOOGLE_CLIENT_SECRET,
+  JWT_SECRET,
+  BASE_URL,
+} = process.env;
 
-  if (!googleClientId || !googleClientSecret) {
-    console.warn('Google OAuth not configured: GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET missing. Skipping Google strategy.');
-  } else {
-    configureAuth({
-      clientID: googleClientId,
-      clientSecret: googleClientSecret,
-      callbackURL: `${BASE_URL || 'http://localhost:3000'}/auth/google/callback`,
-    });
+if (GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET) {
+  configureAuth({
+    clientID: GOOGLE_CLIENT_ID,
+    clientSecret: GOOGLE_CLIENT_SECRET,
+    callbackURL: `${BASE_URL || 'http://localhost:3000'}/auth/google/callback`,
+  });
+} else {
+  console.warn(
+    'Google OAuth not configured; skipping Google strategy.'
+  );
+}
+
+/* -------------------------
+   AUTH ROUTES
+------------------------- */
+app.get('/auth/google', (req, res, next) => {
+  const redirectUri = req.query.redirect_uri;
+  if (!redirectUri) {
+    return res.status(400).send('Missing redirect_uri');
   }
 
-  console.log("STRATEGIES:", passport._strategies);
+  const state = Buffer.from(
+    JSON.stringify({ redirectUri })
+  ).toString('base64');
 
-  // Health check
-  app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
+  passport.authenticate('google', {
+    scope: ['profile', 'email'],
+    session: false,
+    state,
+  })(req, res, next);
+});
 
-  // Google OAuth start
-  app.get('/auth/google', (req, res, next) => {
-    const redirectUri = req.query.redirect_uri;
+app.get(
+  '/auth/google/callback',
+  passport.authenticate('google', {
+    failureRedirect: '/auth/fail',
+    session: false,
+  }),
+  (req, res) => {
+    const state = JSON.parse(
+      Buffer.from(req.query.state, 'base64').toString('utf8')
+    );
 
-    if (!redirectUri) {
-      return res.status(400).send("Missing redirect_uri");
-    }
+    const token = jwt.sign(
+      {
+        sub: req.user.id,
+        email: req.user.email,
+        name: req.user.display_name || req.user.username,
+      },
+      JWT_SECRET || 'dev-jwt',
+      { expiresIn: '7d' }
+    );
 
-    const state = Buffer.from(JSON.stringify({ redirectUri })).toString('base64');
+    res.redirect(`${state.redirectUri}?token=${token}`);
+  }
+);
 
-    passport.authenticate('google', {
-      scope: ['profile', 'email'],
-      session: false,
-      state,
-    })(req, res, next);
+app.get('/auth/fail', (_req, res) =>
+  res.status(401).json({ error: 'Authentication failed' })
+);
+
+/* -------------------------
+   API ROUTES
+------------------------- */
+app.use('/api/games', gamesRoutes);
+app.use('/api/moves', movesRoutes);
+app.use('/api/chat', chatRoutes);
+app.use('/api/friends', friendsRoutes);
+app.use('/api/notifications', notificationsRoutes);
+app.use('/api/stats', statsRoutes);
+app.use('/api/auth', authRoutes);
+
+app.get('/api/secure', requireAuth, (req, res) => {
+  res.json({
+    message: `Hello ${req.user.name}, you are authenticated!`,
   });
+});
 
-  // Google OAuth callback
-  app.get(
-    '/auth/google/callback',
-    passport.authenticate('google', {
-      failureRedirect: '/auth/fail',
-      session: false,
-    }),
-    (req, res) => {
-      console.log("CALLBACK ROUTE HIT, REQ.QUERY:", req.query);
-      const state = JSON.parse(
-        Buffer.from(req.query.state, 'base64').toString('utf8')
-      );
+/* -------------------------
+   START SERVER IMMEDIATELY
+------------------------- */
+const port = Number(process.env.PORT || 3000);
+const host = process.env.HOST || '0.0.0.0';
 
-      const redirectUri = state.redirectUri;
+const server = app.listen(port, host, () => {
+  console.log(`Backend listening on http://${host}:${port}`);
+});
 
-      const token = jwt.sign(
-        {
-          sub: req.user.id,
-          email: req.user.email,
-          name: req.user.display_name || req.user.username,
-        },
-        JWT_SECRET || 'dev-jwt',
-        { expiresIn: '7d' }
-      );
-
-      res.redirect(`${redirectUri}?token=${token}`);
-    }
-  );
-
-
-  app.get('/auth/fail', (req, res) =>
-    res.status(401).json({ error: 'Authentication failed' })
-  );
-
-  // Protected example route
-  app.get('/api/secure', requireAuth, (req, res) => {
-    res.json({
-      message: `Hello ${req.user.name}, you are authenticated!`,
-    });
-  });
-
-  // -------------------------
-  // API ROUTES
-  // -------------------------
-  app.use('/api/games', gamesRoutes);
-  app.use('/api/moves', movesRoutes);
-  app.use('/api/chat', chatRoutes);
-  app.use('/api/friends', friendsRoutes);
-  app.use('/api/notifications', notificationsRoutes);
-  app.use('/api/stats', statsRoutes);
-  app.use('/api/auth', authRoutes);
-
-  // index.js (or your server entry)
-  const port = Number(process.env.PORT || 3000);
-  const host = process.env.HOST || '0.0.0.0';
-
-  const server = app.listen(port, host, () => {
-    console.log(`Backend listening on http://${host}:${port}`);
-  });
-
-  server.on('error', err => {
-    console.error('Server failed to start', err);
+/* -------------------------
+   DB INIT (ASYNC, NON-BLOCKING)
+------------------------- */
+(async () => {
+  try {
+    await waitForDB();
+    await initSchema();
+    global.dbReady = true;
+    console.log('DB initialized and ready.');
+  } catch (err) {
+    console.error('Fatal DB init error:', err);
     process.exit(1);
-  });
-
-  process.on('unhandledRejection', err => {
-    console.error('Unhandled promise rejection', err);
-  });
-  process.on('uncaughtException', err => {
-    console.error('Uncaught exception', err);
-    process.exit(1);
-  });
-
+  }
 })();
+
+/* -------------------------
+   SAFETY NETS
+------------------------- */
+server.on('error', err => {
+  console.error('Server failed to start', err);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', err => {
+  console.error('Unhandled promise rejection', err);
+});
+
+process.on('uncaughtException', err => {
+  console.error('Uncaught exception', err);
+  process.exit(1);
+});
