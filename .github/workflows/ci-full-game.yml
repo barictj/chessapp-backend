@@ -16,6 +16,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Runner debug
+        shell: bash
         run: |
           echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
           docker --version || true
@@ -25,6 +26,7 @@ jobs:
           ls -la
 
       - name: Install Docker Compose plugin
+        shell: bash
         run: |
           sudo apt-get update
           sudo apt-get install -y curl
@@ -35,6 +37,7 @@ jobs:
           docker compose version
 
       - name: Ensure required secrets exist
+        shell: bash
         env:
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
@@ -54,6 +57,7 @@ jobs:
           fi
 
       - name: Create CI env file from secrets
+        shell: bash
         env:
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
@@ -71,6 +75,7 @@ jobs:
           echo ".env.ci created"
 
       - name: Show compose file if present
+        shell: bash
         run: |
           echo "Checking for compose.yaml at repo root"
           if [ -f ./compose.yaml ]; then
@@ -83,9 +88,11 @@ jobs:
           fi
 
       - name: Start stack
+        shell: bash
         run: docker compose --env-file .env.ci -f ./compose.yaml up -d --build
 
       - name: Wait for backend health
+        shell: bash
         run: |
           for i in {1..120}; do
             if curl -sSf http://localhost:3000/health >/dev/null 2>&1; then
@@ -93,9 +100,10 @@ jobs:
               exit 0
             fi
             echo "waiting for backend... ($i)"
+            docker compose -f ./compose.yaml logs backend --no-color --tail 20 || true
             sleep 1
           done
-          echo "backend did not become healthy" && exit 1
+          echo "backend did not become healthy" && docker compose -f ./compose.yaml logs backend --no-color --tail 200 || true && exit 1
 
       - name: Install Node
         uses: actions/setup-node@v4
@@ -103,6 +111,7 @@ jobs:
           node-version: '20'
 
       - name: Install test dependencies
+        shell: bash
         run: |
           if [ -f package.json ]; then
             npm ci
@@ -127,6 +136,7 @@ jobs:
 
       - name: Collect docker logs on failure
         if: failure()
+        shell: bash
         run: |
           echo "=== docker compose ps ==="
           docker compose -f ./compose.yaml ps || true
@@ -146,6 +156,7 @@ jobs:
 
       - name: Tear down stack
         if: always()
+        shell: bash
         run: |
           docker compose --env-file .env.ci -f ./compose.yaml down -v || true
           rm -f .env.ci || true
