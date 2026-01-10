@@ -10,11 +10,19 @@ jobs:
     env:
       BASE_URL: http://localhost:3000
       REAL_JWT_SECRET: ${{ secrets.REAL_JWT_SECRET }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Add these steps before any `docker compose` commands in your job
+      - name: Runner debug
+        run: |
+          echo "GITHUB_REF=$GITHUB_REF"
+          echo "GITHUB_SHA=$GITHUB_SHA"
+          docker --version || true
+          docker compose version || true
+          which docker-compose || true
+
       - name: Install Docker Compose plugin
         run: |
           sudo apt-get update
@@ -25,12 +33,19 @@ jobs:
           chmod +x $DOCKER_CONFIG/cli-plugins/docker-compose
           docker compose version
 
-      - name: Start backend
+      - name: List repo files (debug)
+        run: |
+          echo "PWD: $(pwd)"
+          ls -la
+          echo "Root compose file:"
+          if [ -f docker-compose.yml ]; then echo "FOUND docker-compose.yml"; sed -n '1,120p' docker-compose.yml; else echo "no docker-compose.yml at repo root"; fi
+
+      - name: Start backend (compose at repo root)
         run: docker compose up -d --build
 
       - name: Wait for backend health
         run: |
-          for i in {1..60}; do
+          for i in {1..120}; do
             if curl -sSf http://localhost:3000/health >/dev/null 2>&1; then
               echo "backend healthy"
               exit 0
@@ -40,6 +55,8 @@ jobs:
           done
           echo "backend did not become healthy" && exit 1
 
+      - name: Show compose config
+        run: docker compose config || true
 
       - name: Install Node
         uses: actions/setup-node@v4
@@ -48,7 +65,6 @@ jobs:
 
       - name: Install test dependencies
         run: |
-          # if your tests rely on a package.json in repo root
           if [ -f package.json ]; then
             npm ci
           fi
@@ -57,8 +73,15 @@ jobs:
         shell: pwsh
         run: |
           if (-not $env:REAL_JWT_SECRET) { Write-Error "REAL_JWT_SECRET not set"; exit 1 }
-          $env:PLAYER_A = node -e "const jwt=require('jsonwebtoken'); console.log(jwt.sign({ sub:'3', email:'ci_test_google@example.com', provider:'google' }, process.env.REAL_JWT_SECRET, { algorithm:'HS256', expiresIn:'7d' }));"
-          $env:PLAYER_B = node -e "const jwt=require('jsonwebtoken'); console.log(jwt.sign({ sub:'7', email:'ci_test_google_b@example.com', provider:'google' }, process.env.REAL_JWT_SECRET, { algorithm:'HS256', expiresIn:'7d' }));"
+          $env:PLAYER_A = node -e "const jwt=require('jsonwebtoken'); console.log(jwt.sign({ sub:'ci-player-a', email:'ci_a@example.com', provider:'ci' }, process.env.REAL_JWT_SECRET, { algorithm:'HS256', expiresIn:'7d' }));"
+          $env:PLAYER_B = node -e "const jwt=require('jsonwebtoken'); console.log(jwt.sign({ sub:'ci-player-b', email:'ci_b@example.com', provider:'ci' }, process.env.REAL_JWT_SECRET, { algorithm:'HS256', expiresIn:'7d' }));"
+          # optional preflight auth check
+          try {
+            Invoke-RestMethod -Uri "$env:BASE_URL/api/auth/me" -Headers @{ Authorization = "Bearer $env:PLAYER_A" } -Method Get -TimeoutSec 10 | Out-Null
+          } catch {
+            Write-Error "Preflight auth/me failed for PLAYER_A"
+            exit 1
+          }
           pwsh ./tests/Test-FullGame.ps1
 
       - name: Collect docker logs on failure
@@ -77,4 +100,3 @@ jobs:
           path: |
             tests/logs/**
             docker-compose.yml
-            # include docker logs captured above if you redirect them to a file
