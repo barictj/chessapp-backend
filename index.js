@@ -36,7 +36,7 @@ const {
   BASE_URL,
 } = process.env;
 async function waitForDB() {
-  const maxRetries = 50;
+  const maxRetries = 150;
   const delay = ms => new Promise(res => setTimeout(res, ms));
 
   for (let i = 0; i < maxRetries; i++) {
