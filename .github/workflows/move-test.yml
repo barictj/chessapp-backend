@@ -59,10 +59,11 @@ jobs:
 
       - name: Start backend (background)
         run: |
-          # If you use docker-compose, start it here. Example:
-          docker-compose up -d --build
-          # Or start node directly:
-          # nohup npm start &
+            # start the app directly in the runner (background)
+            nohup npm start > backend.log 2>&1 &
+            # give the server a moment to bind
+            sleep 2
+
 
       - name: Wait for backend
         run: |
