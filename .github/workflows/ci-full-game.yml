@@ -11,14 +11,11 @@ jobs:
   ci-full-game:
     runs-on: ubuntu-latest
     timeout-minutes: 40
+
     env:
-      WAIT_DB_RETRIES: 150
-      WAIT_DB_INTERVAL_MS: 2000
-      # optional: increase workflow polling if you want a longer host-side wait
       WORKFLOW_BACKEND_POLL_RETRIES: 240
       WORKFLOW_BACKEND_POLL_SLEEP: 2
 
-    
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,189 +24,158 @@ jobs:
         shell: bash
         run: |
           echo "=== Runner info ==="
-          uname -a || true
-          echo "Working directory: $(pwd)"
-          echo "Files:"
+          uname -a
+          pwd
           ls -la
 
-      - name: Create CI env file (.env.ci) and log BASE_URL
-        shell: bash
-        run: |
-          echo "=== Creating .env.ci from secrets (will NOT print secret values) ==="
-          BASE_URL="${{ secrets.CI_BASE_URL }}"
-          JWT_SECRET="${{ secrets.REAL_JWT_SECRET }}"
-          GOOGLE_CLIENT_SECRET="${{ secrets.GOOGLE_CLIENT_SECRET }}"
-          DB_HOST=db
-          DB_PORT=3306
-          DB_USER=root
-          DB_PASSWORD=example
-          DB_NAME=chess
-          echo "BASE_URL (to be written into .env.ci): ${BASE_URL:-http://localhost:3000}"
-
-          printf 'JWT_SECRET=%s\nBASE_URL=%s\nGOOGLE_CLIENT_SECRET=%s\nDB_HOST=%s\nDB_PORT=%s\nDB_USER=%s\nDB_PASSWORD=%s\nDB_NAME=%s\n' \
-          "$JWT_SECRET" \
-          "${BASE_URL:-http://localhost:3000}" \
-          "$GOOGLE_CLIENT_SECRET" \
-          "db" \
-          "3306" \
-          "root" \
-          "example" \
-          "chess" > .env.ci
-
-
-          chmod 600 .env.ci
-          echo ".env.ci created at $(pwd)/.env.ci"
-
-          if [ -n "${JWT_SECRET}" ]; then echo "JWT_SECRET is set (value hidden)"; else echo "JWT_SECRET is NOT set"; fi
-          if [ -n "${GOOGLE_CLIENT_SECRET}" ]; then echo "GOOGLE_CLIENT_SECRET is set (value hidden)"; else echo "GOOGLE_CLIENT_SECRET is NOT set"; fi
-
-          echo "Preview .env.ci (non-secret keys only):"
-          grep '^BASE_URL=' .env.ci || true
-
-      - name: Show resolved docker compose config
-        shell: bash
-        run: |
-          echo "=== docker compose config (resolved) preview ==="
-          docker compose --env-file .env.ci -f compose.yaml config || true
-          docker ps --filter name=backend --format "table {{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}"
-
-      - name: Build backend image (no cache) and start stack
-        shell: bash
-        run: |
-          echo "=== Building backend image with --no-cache ==="
-          docker compose --env-file .env.ci -f compose.yaml build --no-cache backend || true
-          echo "=== Starting docker compose stack using .env.ci ==="
-          docker compose --env-file .env.ci -f compose.yaml up -d --force-recreate --build
-          echo "docker compose up returned with exit code $?"
-
-      - name: Show compose ps and ports
-        shell: bash
-        run: |
-          echo "=== docker compose ps (services and ports) ==="
-          docker compose --env-file .env.ci -f compose.yaml ps || true
-          echo "=== docker container ls (recent) ==="
-          docker ps --format "table {{.ID}}\t{{.Image}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}" || true
-
-      - name: Wait for DB then backend health with verbose logging
+      # ----------------------------------------------------
+      # CREATE .env.ci (MATCHES docker-compose + app)
+      # ----------------------------------------------------
+      - name: Create CI env file (.env.ci)
         shell: bash
         run: |
           set -euo pipefail
-          echo "=== Waiting for DB health then backend health ==="
-          DB_CONTAINER=$(docker compose --env-file .env.ci -f compose.yaml ps -q db || true)
-          if [ -z "$DB_CONTAINER" ]; then
-            echo "DB container not found; showing compose ps"
-            docker compose --env-file .env.ci -f compose.yaml ps -a || true
-          fi
 
-          # Poll DB health (uses compose healthcheck if present)
-          echo "Waiting for DB container $DB_CONTAINER to report healthy..."
+          BASE_URL="${{ secrets.CI_BASE_URL }}"
+          JWT_SECRET="${{ secrets.REAL_JWT_SECRET }}"
+          GOOGLE_CLIENT_SECRET="${{ secrets.GOOGLE_CLIENT_SECRET }}"
+
+          cat > .env.ci <<EOF
+JWT_SECRET=${JWT_SECRET}
+BASE_URL=${BASE_URL:-http://localhost:3000}
+GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+
+DB_HOST=db
+DB_PORT=3306
+DB_USER=chess
+DB_PASSWORD=chesspass
+DB_NAME=chess
+EOF
+
+          chmod 600 .env.ci
+          export BASE_URL="${BASE_URL:-http://localhost:3000}"
+
+          echo "Created .env.ci"
+          grep '^BASE_URL=' .env.ci
+
+      # ----------------------------------------------------
+      # VALIDATE COMPOSE CONFIG
+      # ----------------------------------------------------
+      - name: Show resolved docker compose config
+        shell: bash
+        run: |
+          docker compose --env-file .env.ci -f compose.yaml config
+
+      # ----------------------------------------------------
+      # BUILD + START STACK
+      # ----------------------------------------------------
+      - name: Build backend image and start stack
+        shell: bash
+        run: |
+          set -e
+          docker compose --env-file .env.ci -f compose.yaml build --no-cache backend
+          docker compose --env-file .env.ci -f compose.yaml up -d --force-recreate
+
+      # ----------------------------------------------------
+      # SHOW RUNNING CONTAINERS
+      # ----------------------------------------------------
+      - name: Show compose ps
+        shell: bash
+        run: |
+          docker compose --env-file .env.ci -f compose.yaml ps
+          docker ps
+
+      # ----------------------------------------------------
+      # WAIT FOR DB → BACKEND HEALTH
+      # ----------------------------------------------------
+      - name: Wait for DB then backend health
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DB_CONTAINER=$(docker compose --env-file .env.ci -f compose.yaml ps -q db)
+          echo "Waiting for DB health..."
+
           for i in $(seq 1 60); do
-            STATUS=$(docker inspect --format '{{.State.Health.Status}}' "$DB_CONTAINER" 2>/dev/null || echo unknown)
-            echo "DB health: $STATUS (attempt $i/60)"
-            if [ "$STATUS" = "healthy" ]; then
-              echo "DB is healthy"
-              break
-            fi
+            STATUS=$(docker inspect --format '{{.State.Health.Status}}' "$DB_CONTAINER")
+            echo "DB health: $STATUS"
+            [ "$STATUS" = "healthy" ] && break
             sleep 2
           done
 
-          # Then poll backend health using workflow env vars
-          echo "Waiting for backend health at ${BASE_URL:-http://localhost:3000}/health ..."
-          MAX=${WORKFLOW_BACKEND_POLL_RETRIES:-240}
-          SLEEP=${WORKFLOW_BACKEND_POLL_SLEEP:-2}
-          for i in $(seq 1 $MAX); do
-            echo "wait iteration $i/$MAX: curling http://localhost:3000/health ..."
-            HTTP_STATUS=$(curl -s -o /tmp/health_resp.txt -w "%{http_code}" http://localhost:3000/health || true)
-            echo "HTTP status: $HTTP_STATUS"
+          echo "Waiting for backend /health..."
+
+          for i in $(seq 1 ${WORKFLOW_BACKEND_POLL_RETRIES}); do
+            HTTP_STATUS=$(curl -s -o /tmp/health.json -w "%{http_code}" http://localhost:3000/health || true)
+            echo "Attempt $i → HTTP $HTTP_STATUS"
+
             if [ "$HTTP_STATUS" = "200" ]; then
-              echo "backend healthy at attempt $i"
-              sed -n '1,200p' /tmp/health_resp.txt || true
+              cat /tmp/health.json
               exit 0
             fi
-            echo "not healthy yet; tail backend logs (last 50 lines):"
-            docker compose --env-file .env.ci -f compose.yaml logs backend --tail 50 || true
-            sleep $SLEEP
+
+            docker compose --env-file .env.ci -f compose.yaml logs backend --tail 20
+            sleep ${WORKFLOW_BACKEND_POLL_SLEEP}
           done
 
-          echo "backend did not become healthy within timeout"
-          docker compose --env-file .env.ci -f compose.yaml logs backend --tail 500 || true
+          echo "Backend failed health check"
           exit 1
 
-
-      - name: Debug container state (post-health)
-        if: success()
-        shell: bash
-        run: |
-          echo "=== Post-health container state ==="
-          docker compose --env-file .env.ci -f compose.yaml ps -a || true
-          CONTAINER=$(docker compose --env-file .env.ci -f compose.yaml ps -q backend || true)
-          echo "backend container id: $CONTAINER"
-          if [ -n "$CONTAINER" ]; then
-            echo "Inspecting container state:"
-            docker inspect --format '{{json .State}}' "$CONTAINER" || docker inspect "$CONTAINER" || true
-            echo "Health details (if any):"
-            docker inspect --format '{{json .State.Health}}' "$CONTAINER" || true
-            echo "Environment inside container (only BASE_URL presence shown):"
-            docker compose --env-file .env.ci -f compose.yaml exec -T backend sh -lc 'env | egrep "BASE_URL" || echo "BASE_URL not set inside container"' || true
-            echo "Confirm JWT_SECRET is present inside container (value hidden):"
-            docker compose --env-file .env.ci -f compose.yaml exec -T backend sh -lc 'if [ -n "$JWT_SECRET" ]; then echo "JWT_SECRET set inside container (hidden)"; else echo "JWT_SECRET NOT set inside container"; fi' || true
-            echo "List /app and node_modules:"
-            docker compose --env-file .env.ci -f compose.yaml exec -T backend sh -lc 'pwd; ls -la /app || true; ls -la /app/node_modules || true' || true
-          fi
-
+      # ----------------------------------------------------
+      # GENERATE JWT INSIDE CONTAINER
+      # ----------------------------------------------------
       - name: Generate JWT inside backend container
         id: gen_token
         shell: bash
         run: |
           set -euo pipefail
-          echo "=== Generating JWT inside backend container (uses container env) ==="
-          RAW_TOKEN=$(docker compose --env-file .env.ci -f compose.yaml exec -T backend sh -lc 'node -e "const jwt=require(\"jsonwebtoken\"); console.log(jwt.sign({sub:\"ci-user\",role:\"ci\"}, process.env.JWT_SECRET,{expiresIn:\"1h\"}))"')
-          TOKEN=$(echo -n "$RAW_TOKEN" | tr -d '\r\n')
-          echo "Generated token length: ${#TOKEN}"
-          echo "AUTH_TOKEN=$TOKEN" >> $GITHUB_OUTPUT
 
-      - name: Call protected endpoint with token
+          TOKEN=$(docker compose --env-file .env.ci -f compose.yaml exec -T backend sh -lc \
+            'node -e "const jwt=require(\"jsonwebtoken\"); console.log(jwt.sign({sub:\"ci-user\"}, process.env.JWT_SECRET,{expiresIn:\"1h\"}))"')
+
+          echo "AUTH_TOKEN=${TOKEN}" >> $GITHUB_OUTPUT
+
+      # ----------------------------------------------------
+      # CALL PROTECTED ENDPOINT
+      # ----------------------------------------------------
+      - name: Call protected endpoint
         shell: bash
         run: |
           set -euo pipefail
-          echo "=== Calling protected endpoint with generated token (token not printed) ==="
-          TOKEN="${{ steps.gen_token.outputs.AUTH_TOKEN }}"
-          echo "Using BASE_URL: $(grep '^BASE_URL=' .env.ci | cut -d'=' -f2-)"
-          PROTECTED_PATH="/api/protected"
-          echo "Calling http://localhost:3000${PROTECTED_PATH}"
-          HTTP_STATUS=$(curl -s -o /tmp/auth_resp.json -w "%{http_code}" -H "Authorization: Bearer $TOKEN" http://localhost:3000${PROTECTED_PATH} || true)
-          echo "HTTP status: $HTTP_STATUS"
-          echo "Response body:"
-          sed -n '1,200p' /tmp/auth_resp.json || true
-          if [ "$HTTP_STATUS" != "200" ]; then
-            echo "Authentication check failed (status $HTTP_STATUS)"
-            exit 1
-          fi
-          echo "Authentication succeeded"
 
-      - name: Dump logs to files for artifact (on failure)
+          TOKEN="${{ steps.gen_token.outputs.AUTH_TOKEN }}"
+          HTTP_STATUS=$(curl -s -o /tmp/protected.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" \
+            http://localhost:3000/api/secure)
+
+          cat /tmp/protected.json
+          [ "$HTTP_STATUS" = "200" ]
+
+      # ----------------------------------------------------
+      # UPLOAD LOGS ON FAILURE
+      # ----------------------------------------------------
+      - name: Dump logs (on failure)
         if: failure()
         shell: bash
         run: |
-          echo "=== Dumping logs to files for upload ==="
-          docker compose --env-file .env.ci -f compose.yaml logs backend --tail 500 > backend-logs.txt || true
-          docker compose --env-file .env.ci -f compose.yaml logs db --tail 500 > db-logs.txt || true
-          echo "Wrote backend-logs.txt and db-logs.txt"
+          docker compose --env-file .env.ci -f compose.yaml logs backend > backend.log || true
+          docker compose --env-file .env.ci -f compose.yaml logs db > db.log || true
 
-      - name: Upload logs artifact (on failure)
+      - name: Upload logs artifact
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: ci-logs
           path: |
-            backend-logs.txt
-            db-logs.txt
+            backend.log
+            db.log
 
+      # ----------------------------------------------------
+      # CLEANUP
+      # ----------------------------------------------------
       - name: Tear down stack
         if: always()
         shell: bash
         run: |
-          echo "=== Tearing down stack and cleaning up ==="
           docker compose --env-file .env.ci -f compose.yaml down -v || true
-          rm -f .env.ci || true
-          echo "Cleanup complete"
+          rm -f .env.ci
