@@ -63,14 +63,16 @@ jobs:
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
           REAL_JWT_SECRET: ${{ secrets.REAL_JWT_SECRET }}
+          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
         run: |
-          cat > .env.ci <<EOF
-          GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID
-          GOOGLE_CLIENT_SECRET=$GOOGLE_CLIENT_SECRET
-          SESSION_SECRET=$SESSION_SECRET
-          JWT_SECRET=$REAL_JWT_SECRET
-          BASE_URL=http://localhost:3000
-          EOF
+          cat > .env.ci <<'EOF'
+GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID
+GOOGLE_CLIENT_SECRET=$GOOGLE_CLIENT_SECRET
+SESSION_SECRET=$SESSION_SECRET
+JWT_SECRET=$REAL_JWT_SECRET
+BASE_URL=http://localhost:3000
+NGROK_AUTHTOKEN=$NGROK_AUTHTOKEN
+EOF
           chmod 600 .env.ci
           echo ".env.ci created"
 
