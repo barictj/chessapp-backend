@@ -1,11 +1,11 @@
-name: CI Full Game Test
+name: CI Full Game Test (bash-only)
 
 on:
   pull_request:
   workflow_dispatch:
 
 jobs:
-  full-game:
+  full-game-bash:
     runs-on: ubuntu-latest
     env:
       BASE_URL: http://localhost:3000
@@ -15,228 +15,189 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Runner debug
-        shell: bash
-        run: |
-          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
-          docker --version || true
-          docker compose version || true
-          echo "Repo root listing:"
-          ls -la
-
-      - name: Install Docker Compose plugin
+      - name: Install prerequisites
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl
+          sudo apt-get install -y curl jq pwsh uuid-runtime
           DOCKER_CONFIG=${DOCKER_CONFIG:-$HOME/.docker}
-          mkdir -p $DOCKER_CONFIG/cli-plugins
-          curl -SL "https://github.com/docker/compose/releases/download/v2.20.2/docker-compose-linux-x86_64" -o $DOCKER_CONFIG/cli-plugins/docker-compose
-          chmod +x $DOCKER_CONFIG/cli-plugins/docker-compose
-          docker compose version
-
-      - name: Ensure required secrets exist
-        shell: bash
-        env:
-          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-          SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
-          REAL_JWT_SECRET: ${{ secrets.REAL_JWT_SECRET }}
-        run: |
-          missing=0
-          for s in GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET SESSION_SECRET REAL_JWT_SECRET; do
-            if [ -z "${!s}" ]; then
-              echo "Missing secret: $s"
-              missing=1
-            fi
-          done
-          if [ "$missing" -eq 1 ]; then
-            echo "One or more required secrets are missing. Aborting."
-            exit 1
+          mkdir -p "$DOCKER_CONFIG/cli-plugins"
+          if ! docker compose version >/dev/null 2>&1; then
+            curl -SL "https://github.com/docker/compose/releases/download/v2.20.2/docker-compose-linux-x86_64" -o "$DOCKER_CONFIG/cli-plugins/docker-compose"
+            chmod +x "$DOCKER_CONFIG/cli-plugins/docker-compose"
           fi
+          docker compose version || true
 
-      - name: Create CI env file from secrets
+      - name: Validate required secrets
         shell: bash
         env:
-          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-          SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
           REAL_JWT_SECRET: ${{ secrets.REAL_JWT_SECRET }}
-          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
         run: |
-          printf '%s\n' \
-            "GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID" \
-            "GOOGLE_CLIENT_SECRET=$GOOGLE_CLIENT_SECRET" \
-            "SESSION_SECRET=$SESSION_SECRET" \
-            "JWT_SECRET=$REAL_JWT_SECRET" \
-            "BASE_URL=http://localhost:3000" \
-            "NGROK_AUTHTOKEN=$NGROK_AUTHTOKEN" \
-          > .env.ci
+          if [ -z "${REAL_JWT_SECRET:-}" ]; then
+            echo "REAL_JWT_SECRET is required"; exit 1
+          fi
+          echo "Secrets present"
+
+      - name: Create CI env file
+        shell: bash
+        env:
+          REAL_JWT_SECRET: ${{ secrets.REAL_JWT_SECRET }}
+        run: |
+          cat > .env.ci <<EOF
+          JWT_SECRET=${REAL_JWT_SECRET}
+          BASE_URL=http://localhost:3000
+          EOF
           chmod 600 .env.ci
           echo ".env.ci created"
-
-      - name: Debug .env.ci (presence only)
-        shell: bash
-        run: |
-          echo "---- .env.ci keys (no secret values printed) ----"
-          for k in GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET SESSION_SECRET JWT_SECRET NGROK_AUTHTOKEN; do
-            if grep -qE "^${k}=" .env.ci; then echo "$k=LINE_PRESENT"; else echo "$k=MISSING_LINE"; fi
-          done
-          tr -d '\r' < .env.ci > .env.ci.tmp && mv .env.ci.tmp .env.ci || true
-
-      - name: Show compose file if present
-        shell: bash
-        run: |
-          if [ -f ./compose.yaml ]; then
-            echo "Found compose.yaml"
-            sed -n '1,200p' ./compose.yaml
-          else
-            echo "ERROR: compose.yaml not found at repo root"
-            ls -la
-            exit 1
-          fi
 
       - name: Start stack
         shell: bash
         run: docker compose --env-file .env.ci -f ./compose.yaml up -d --build
 
-      - name: Wait for DB and backend health
+      - name: Wait for DB and backend readiness
         shell: bash
         run: |
           set -euo pipefail
-
-          echo "Waiting for db container to become healthy..."
           DB_CONTAINER=$(docker compose -f ./compose.yaml ps -q db)
           if [ -z "$DB_CONTAINER" ]; then
-            echo "DB container not found; listing containers:" && docker compose -f ./compose.yaml ps
-            exit 1
+            docker compose -f ./compose.yaml ps
+            echo "DB container not found"; exit 1
           fi
-
           for i in {1..60}; do
             STATUS=$(docker inspect --format='{{.State.Health.Status}}' "$DB_CONTAINER" 2>/dev/null || echo "no-health")
-            echo "db health status: $STATUS (attempt $i/60)"
-            if [ "$STATUS" = "healthy" ]; then
-              echo "db healthy"
-              break
-            fi
+            echo "db health: $STATUS ($i/60)"
+            [ "$STATUS" = "healthy" ] && break
             sleep 2
           done
-
           if [ "$STATUS" != "healthy" ]; then
-            echo "DB did not become healthy in time" && docker compose -f ./compose.yaml logs db --no-color --tail 200 || true
+            docker compose -f ./compose.yaml logs db --no-color --tail 200 || true
+            exit 1
+          fi
+          for i in {1..120}; do
+            if curl -sSf http://localhost:3000/health >/dev/null 2>&1; then
+              echo "backend healthy"; break
+            fi
+            echo "waiting for backend... ($i)"; docker compose -f ./compose.yaml logs backend --no-color --tail 20 || true; sleep 1
+          done
+          if ! curl -sSf http://localhost:3000/health >/dev/null 2>&1; then
+            docker compose -f ./compose.yaml logs backend --no-color --tail 200 || true
             exit 1
           fi
 
-          echo "Waiting for backend /health..."
-          for i in {1..120}; do
-            if curl -sSf http://localhost:3000/health >/dev/null 2>&1; then
-              echo "backend healthy"
-              exit 0
-            fi
-            echo "waiting for backend... ($i)"
-            docker compose -f ./compose.yaml logs backend --no-color --tail 20 || true
-            sleep 1
-          done
-
-          echo "backend did not become healthy" && docker compose -f ./compose.yaml logs backend --no-color --tail 200 || true && exit 1
-
-      - name: Check JWT_SECRET inside backend container
-        shell: bash
-        run: |
-          docker compose --env-file .env.ci -f ./compose.yaml exec -T backend bash -lc '
-            if [ -z "${JWT_SECRET}" ]; then echo "JWT_SECRET=EMPTY"; else echo "JWT_SECRET=SET"; fi
-          '
-
-      - name: Install Node
+      - name: Install Node for token generation
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Install test dependencies
+      - name: Generate JWTs for players sub 3 and sub 7 and export
         shell: bash
-        run: |
-          if [ -f package.json ]; then npm ci; fi
-
-      - name: Generate test token (pwsh)
-        shell: pwsh
         env:
           REAL_JWT_SECRET: ${{ env.REAL_JWT_SECRET }}
         run: |
-          if (-not $env:REAL_JWT_SECRET) { Write-Error "REAL_JWT_SECRET not set"; exit 1 }
-          $playerA = node -e "const jwt=require('jsonwebtoken'); console.log(jwt.sign({ sub:'ci-player-a', email:'ci_a@example.com', provider:'ci' }, process.env.REAL_JWT_SECRET, { algorithm:'HS256', expiresIn:'7d' }));"
-          $playerB = node -e "const jwt=require('jsonwebtoken'); console.log(jwt.sign({ sub:'ci-player-b', email:'ci_b@example.com', provider:'ci' }, process.env.REAL_JWT_SECRET, { algorithm:'HS256', expiresIn:'7d' }));"
-          # write token to file for verification (do not print token)
-          Set-Content -Path token.txt -Value $playerA -NoNewline
-          # export for subsequent steps (use Add-Content on $env:GITHUB_ENV)
-          Add-Content -Path $env:GITHUB_ENV -Value "PLAYER_A=$playerA"
-          Add-Content -Path $env:GITHUB_ENV -Value "PLAYER_B=$playerB"
+          set -euo pipefail
+          if [ -z "${REAL_JWT_SECRET:-}" ]; then echo "REAL_JWT_SECRET missing"; exit 1; fi
+          PLAYER_A=$(node -e "const jwt=require('jsonwebtoken'); console.log(jwt.sign({ sub:'3', email:'player3@example.com', provider:'google' }, process.env.REAL_JWT_SECRET, { algorithm:'HS256', expiresIn:'7d' }));")
+          PLAYER_B=$(node -e "const jwt=require('jsonwebtoken'); console.log(jwt.sign({ sub:'7', email:'player7@example.com', provider:'google' }, process.env.REAL_JWT_SECRET, { algorithm:'HS256', expiresIn:'7d' }));")
+          echo "Generated PLAYER_A token (first 8 chars): ${PLAYER_A:0:8}"
+          echo "Generated PLAYER_B token (first 8 chars): ${PLAYER_B:0:8}"
+          printf '%s\n' "PLAYER_A=$PLAYER_A" "PLAYER_B=$PLAYER_B" >> "$GITHUB_ENV"
+          printf '%s' "$PLAYER_A" > token.txt
+          chmod 600 token.txt
 
-      - name: Confirm PLAYER_A exported
+      - name: Verify token inside backend container
         shell: bash
         run: |
-          if [ -z "${PLAYER_A:-}" ]; then echo "PLAYER_A not exported"; exit 1; else echo "PLAYER_A exported"; fi
-
-      - name: Verify test token inside backend container
-        shell: bash
-        run: |
-          if [ ! -f token.txt ]; then echo "token.txt missing"; exit 1; fi
           TOKEN=$(cat token.txt)
           docker compose --env-file .env.ci -f ./compose.yaml exec -T backend bash -lc "
             node -e \"
               const jwt = require('jsonwebtoken');
-              const token = process.argv[1];
-              try { jwt.verify(token, process.env.JWT_SECRET); console.log('VERIFY_OK'); process.exit(0); }
-              catch (err) { console.error('VERIFY_FAIL:', err.message); process.exit(2); }
+              try { jwt.verify(process.argv[1], process.env.JWT_SECRET); console.log('VERIFY_OK'); process.exit(0); }
+              catch (err) { console.error('VERIFY_FAIL', err.message); process.exit(2); }
             \" '$TOKEN'
           "
 
-      - name: Ensure CI user exists via app API (preferred)
+      - name: Seed CI users mapping sub to google_id (idempotent)
         shell: bash
         run: |
-          TOKEN=$(cat token.txt)
-          echo "Attempting to create/ensure CI user via app API..."
-          # Try app API first (idempotent if implemented)
-          curl -s -i -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
-            -d '{"username":"ci_test_google","email":"ci_test_google@example.com","google_id":"ci-player-a","display_name":"CI Google Test","provider":"google"}' \
-            http://localhost:3000/api/users || true
-
-          echo "Verify via DB; if missing, update fixture directly"
           docker compose exec -T db mysql -uroot -pexample -e "
             USE chess;
-            SELECT id, username, email, google_id, provider, is_active FROM users WHERE google_id='ci-player-a' LIMIT 1;
-            -- If not present, update existing fixture row to match token sub and ensure active
-            UPDATE users
-              SET google_id = 'ci-player-a', is_active = 1, updated_at = NOW()
-              WHERE username = 'ci_test_google' OR email = 'ci_test_google@example.com';
-            INSERT INTO users (username, email, google_id, display_name, avatar_url, provider, is_active, created_at)
-            SELECT 'ci_test_google', 'ci_test_google@example.com', 'ci-player-a', 'CI Google Test', 'https://example.com/avatar-ci.png', 'google', 1, NOW()
-            FROM DUAL
-            WHERE NOT EXISTS (SELECT 1 FROM users WHERE google_id = 'ci-player-a');
-            SELECT id, username, email, google_id, provider, is_active FROM users WHERE google_id = 'ci-player-a' LIMIT 1;
+            CREATE TABLE IF NOT EXISTS users (
+              id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+              username VARCHAR(50) NOT NULL UNIQUE,
+              email VARCHAR(255) NOT NULL UNIQUE,
+              password_hash VARCHAR(255) NULL,
+              google_id VARCHAR(255) NULL UNIQUE,
+              display_name VARCHAR(100),
+              avatar_url VARCHAR(500),
+              is_active TINYINT(1) NOT NULL DEFAULT 1,
+              provider ENUM('local','google') NOT NULL DEFAULT 'local',
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            INSERT INTO users (username, email, google_id, display_name, provider, is_active, created_at)
+              VALUES ('ci_player_3','player3@example.com','3','CI Player 3','google',1,NOW())
+              ON DUPLICATE KEY UPDATE google_id=VALUES(google_id), email=VALUES(email);
+            INSERT INTO users (username, email, google_id, display_name, provider, is_active, created_at)
+              VALUES ('ci_player_7','player7@example.com','7','CI Player 7','google',1,NOW())
+              ON DUPLICATE KEY UPDATE google_id=VALUES(google_id), email=VALUES(email);
+            SELECT id, username, email, google_id, is_active FROM users WHERE google_id IN ('3','7');
           "
 
-      - name: Confirm CI user exists
+      - name: Create game as player 3 and play Scholar's Mate moves
         shell: bash
-        run: |
-          docker compose exec -T db mysql -uroot -pexample -e "USE chess; SELECT id, username, email, google_id, provider, is_active FROM users WHERE google_id='ci-player-a' LIMIT 1;"
-
-      - name: Run full game test
-        shell: pwsh
         env:
           BASE_URL: ${{ env.BASE_URL }}
-          PLAYER_A: ${{ env.PLAYER_A }}
-          PLAYER_B: ${{ env.PLAYER_B }}
         run: |
-          if (-not $env:PLAYER_A) { Write-Error "PLAYER_A not set"; exit 1 }
-          try {
-            Invoke-RestMethod -Uri "$env:BASE_URL/api/auth/me" -Headers @{ Authorization = "Bearer $env:PLAYER_A" } -Method Get -TimeoutSec 10 | Out-Null
-          } catch {
-            Write-Error "Preflight auth/me failed for PLAYER_A"
-            exit 1
+          set -euo pipefail
+          if [ -f token.txt ]; then TOKEN=$(cat token.txt); else TOKEN="${PLAYER_A:-}"; fi
+          if [ -z "${TOKEN:-}" ]; then echo "PLAYER_A token missing"; exit 1; fi
+          AUTH_HEADER="Authorization: Bearer $TOKEN"
+          CT_HEADER="Content-Type: application/json"
+          PLAYER_B_ID=$(docker compose exec -T db mysql -uroot -pexample -N -e "USE chess; SELECT id FROM users WHERE google_id='7' LIMIT 1;")
+          if [ -z "$PLAYER_B_ID" ]; then docker compose exec -T db mysql -uroot -pexample -e "USE chess; SELECT id, username, email, google_id FROM users LIMIT 50;"; echo "Opponent not found"; exit 1; fi
+          echo "Opponent id: $PLAYER_B_ID"
+          echo "Creating game (player 3 vs player 7)..."
+          create_resp=$(curl -s -w "\n%{http_code}" -X POST "$BASE_URL/api/games" -H "$AUTH_HEADER" -H "$CT_HEADER" -d "{\"opponent_id\":\"$PLAYER_B_ID\"}")
+          create_code=$(echo "$create_resp" | tail -n1)
+          create_body=$(echo "$create_resp" | sed '$d')
+          echo "Create HTTP $create_code"
+          echo "$create_body" | jq -C . || true
+          if [[ "$create_code" -lt 200 || "$create_code" -ge 300 ]]; then echo "Game creation failed"; exit 1; fi
+          game_id=$(echo "$create_body" | jq -r '.id // .game_id // empty')
+          if [ -z "$game_id" ]; then echo "Could not extract game id"; exit 1; fi
+          echo "Game id: $game_id"
+          moves=(
+            '{"from":"e2","to":"e4"}'
+            '{"from":"e7","to":"e5"}'
+            '{"from":"d1","to":"h5"}'
+            '{"from":"b8","to":"c6"}'
+            '{"from":"f1","to":"c4"}'
+            '{"from":"g8","to":"f6"}'
+            '{"from":"h5","to":"f7"}'
+          )
+          post_move() {
+            payload="$1"
+            if command -v uuidgen >/dev/null 2>&1; then rid=$(uuidgen); else rid=$(date +%s%N); fi
+            payload_with_id=$(echo "$payload" | jq --arg rid "$rid" '. + {request_id:$rid}')
+            echo "Posting move: $payload_with_id"
+            resp=$(curl -s -w "\n%{http_code}" -X POST "$BASE_URL/api/games/$game_id/moves" -H "$AUTH_HEADER" -H "$CT_HEADER" -d "$payload_with_id")
+            code=$(echo "$resp" | tail -n1)
+            body=$(echo "$resp" | sed '$d')
+            echo "Move HTTP $code"
+            echo "$body" | jq -C . || true
+            if [[ "$code" -lt 200 || "$code" -ge 300 ]]; then echo "Move failed (HTTP $code)"; exit 1; fi
           }
-          pwsh ./tests/Test-FullGame.ps1
+          for m in "${moves[@]}"; do post_move "$m"; sleep 0.4; done
+          echo "Fetching final game state..."
+          final_resp=$(curl -s -w "\n%{http_code}" -H "$AUTH_HEADER" "$BASE_URL/api/games/$game_id")
+          final_code=$(echo "$final_resp" | tail -n1)
+          final_body=$(echo "$final_resp" | sed '$d')
+          echo "Final HTTP $final_code"
+          echo "$final_body" | jq -C . || true
+          if [[ "$final_code" -lt 200 || "$final_code" -ge 300 ]]; then echo "Failed to fetch final game"; exit 1; fi
+          echo "Full game sequence completed."
 
-      - name: Collect docker logs on failure
+      - name: Collect logs on failure
         if: failure()
         shell: bash
         run: |
@@ -247,7 +208,7 @@ jobs:
           echo "=== container list ==="
           docker ps -a || true
 
-      - name: Upload logs on failure
+      - name: Upload artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
